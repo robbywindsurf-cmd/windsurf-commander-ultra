@@ -4,19 +4,28 @@
   "main": "index.js",
   "dependencies": {
     "@commandersuite/core": "file:../commander-core",
+    "@react-navigation/bottom-tabs": "^7.18.18",
+    "@react-navigation/native": "^7.3.18",
     "expo": "~57.0.21",
     "expo-apple-authentication": "~57.0.1",
     "expo-sqlite": "~57.0.2",
     "expo-status-bar": "~57.0.1",
     "react": "19.2.3",
     "react-native": "0.86.3",
-    "react-native-purchases": "^10.9.1"
+    "react-native-purchases": "^10.9.1",
+    "react-native-safe-area-context": "~5.7.0",
+    "react-native-screens": "~4.26.0"
   },
   "scripts": {
     "start": "expo start",
-    "android": "expo start --android",
-    "ios": "expo start --ios",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
     "web": "expo start --web"
   },
-  "private": true
+  "private": true,
+  "expo": {
+    "autolinking": {
+      "exclude": ["expo-apple-authentication"]
+    }
+  }
 }

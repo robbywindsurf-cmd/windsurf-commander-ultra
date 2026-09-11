@@ -8,7 +8,8 @@
     "userInterfaceStyle": "light",
     "ios": {
       "supportsTablet": true,
-      "usesAppleSignIn": true
+      "usesAppleSignIn": false,
+      "bundleIdentifier": "com.anonymous.windsurf-commander-ultra"
     },
     "android": {
       "adaptiveIcon": {
