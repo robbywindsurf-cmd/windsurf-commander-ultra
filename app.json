@@ -9,7 +9,39 @@
     "ios": {
       "supportsTablet": true,
       "usesAppleSignIn": false,
-      "bundleIdentifier": "com.anonymous.windsurf-commander-ultra"
+      "bundleIdentifier": "com.anonymous.windsurf-commander-ultra",
+      "infoPlist": {
+        "NSPhotoLibraryUsageDescription": "Windsurf Commander needs access to your photos to analyse your windsurfing videos.",
+        "NSCameraUsageDescription": "Windsurf Commander needs camera access for live pose analysis.",
+        "UTImportedTypeDeclarations": [
+          {
+            "UTTypeConformsTo": [
+              "public.data",
+              "public.movie"
+            ],
+            "UTTypeDescription": "GoPro 360 Video",
+            "UTTypeIdentifier": "com.gopro.mediasdk.sphericalvideo",
+            "UTTypeTagSpecification": {
+              "public.filename-extension": [
+                "360"
+              ]
+            }
+          },
+          {
+            "UTTypeConformsTo": [
+              "public.data",
+              "public.movie"
+            ],
+            "UTTypeDescription": "GoPro 360 Low Res Video",
+            "UTTypeIdentifier": "com.gopro.mediasdk.sphericallowres",
+            "UTTypeTagSpecification": {
+              "public.filename-extension": [
+                "360"
+              ]
+            }
+          }
+        ]
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -24,7 +56,16 @@
     },
     "plugins": [
       "expo-sqlite",
-      "expo-video"
+      "expo-video",
+      "./plugins/withGoProSDK.js",
+      [
+        "expo-build-properties",
+        {
+          "ios": {
+            "deploymentTarget": "18.6"
+          }
+        }
+      ]
     ]
   }
 }

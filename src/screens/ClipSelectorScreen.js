@@ -10,8 +10,17 @@ import {
 } from 'react-native';
 import { VideoView, useVideoPlayer } from 'expo-video';
 import * as ScreenOrientation from 'expo-screen-orientation';
+import { TierService, canAccess } from '@commandersuite/core';
 import { analyseSessionVideo } from '../utils/poseAnalysisPipeline';
 import { colors } from '../theme';
+
+async function unlockToPortrait() {
+  try {
+    await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
+  } catch (err) {
+    console.warn('[ClipSelector] orientation unlock failed:', err.message);
+  }
+}
 
 const DEEP   = colors.deep;
 const SKY    = colors.accent;
@@ -36,6 +45,7 @@ export default function ClipSelectorScreen({ route, navigation }) {
   const { videoUri, sessionId, sessionName, videoStartUtc, fname } = route.params;
 
   const cancelRef = useRef(false);
+  const unlockedRef = useRef(false);
   const player = useVideoPlayer(videoUri, (p) => {
     p.timeUpdateEventInterval = 0.25;
   });
@@ -58,13 +68,39 @@ export default function ClipSelectorScreen({ route, navigation }) {
 
   const [annotatedFrames, setAnnotatedFrames] = useState([]);
   const [reviewIndex, setReviewIndex]         = useState(0);
+  const [userTier, setUserTier]               = useState('free');
+  const [summary, setSummary]                 = useState(null);
+
+  useEffect(() => {
+    TierService.getCachedTier().then(setUserTier);
+  }, []);
 
   useEffect(() => {
     ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
+    // Belt-and-braces: this screen's own buttons already await the unlock
+    // before navigating, but beforeRemove catches every other way off this
+    // screen too (hardware back, swipe-back if ever re-enabled). Blocking
+    // the removal until the unlock resolves — rather than firing it and
+    // letting the transition proceed in parallel — is what actually fixes
+    // the race: the destination screen was animating in mid-rotation before,
+    // leaving the view split between the old landscape frame and the new
+    // portrait content.
+    const unsub = navigation.addListener('beforeRemove', (e) => {
+      // Already unlocked (either by this handler's own redispatch below, or
+      // by a button's own await-then-navigate) — let this removal through
+      // as normal, or dispatching the redispatch below would loop forever.
+      if (unlockedRef.current) return;
+      e.preventDefault();
+      unlockToPortrait().finally(() => {
+        unlockedRef.current = true;
+        navigation.dispatch(e.data.action);
+      });
+    });
     return () => {
-      ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
+      unsub();
+      unlockToPortrait();
     };
-  }, []);
+  }, [navigation]);
 
   useEffect(() => {
     const timeSub = player.addListener('timeUpdate', ({ currentTime }) => {
@@ -114,18 +150,24 @@ export default function ClipSelectorScreen({ route, navigation }) {
     setAnnotatedFrames([]);
     setAnalysisStatus('Preparing…');
 
+    // Skeleton overlay + frame review are premium/ultimate perks (FULL_ANALYSIS).
+    // Free tier still gets the full MoveNet pass and its angle averages —
+    // just no live preview and no frames kept around afterwards.
+    const canSeeSkeleton = canAccess('FULL_ANALYSIS', userTier);
+
     try {
-      await analyseSessionVideo({
+      const result = await analyseSessionVideo({
         videoUri,
         sessionId,
         board:    null,
         notes:    'Analysed from ' + fname + ' at ' + formatTime(startMs || 0),
+        userTier,
         onProgress: (current, total) => {
           if (cancelRef.current) return;
           setAnalysisProgress({ current, total });
         },
         onFrame: (annotatedFrame) => {
-          if (cancelRef.current) return;
+          if (cancelRef.current || !canSeeSkeleton) return;
           if (annotatedFrame) {
             setCurrentFrame(annotatedFrame);
             setAnnotatedFrames(prev => [...prev, annotatedFrame]);
@@ -143,7 +185,8 @@ export default function ClipSelectorScreen({ route, navigation }) {
       });
 
       if (!cancelRef.current) {
-        setMode('review');
+        setSummary(result);
+        setMode(canSeeSkeleton ? 'review' : 'summary');
         setReviewIndex(0);
         setAnalysisStatus('');
       }
@@ -154,6 +197,21 @@ export default function ClipSelectorScreen({ route, navigation }) {
         setAnalysisStatus('');
       }
     }
+  }
+
+  async function goToSessionDetail() {
+    await unlockToPortrait();
+    navigation.navigate('SessionDetail', { sessionId });
+  }
+
+  async function goToUpgrade() {
+    await unlockToPortrait();
+    navigation.navigate('Upgrade');
+  }
+
+  async function exitClipSelector() {
+    await unlockToPortrait();
+    navigation.goBack();
   }
 
   const analysing   = mode === 'analysing';
@@ -195,7 +253,7 @@ export default function ClipSelectorScreen({ route, navigation }) {
               </TouchableOpacity>
               <TouchableOpacity
                 style={[styles.reviewBtn, { backgroundColor: SKY }]}
-                onPress={() => navigation.navigate('SessionDetail', { sessionId })}
+                onPress={goToSessionDetail}
               >
                 <Text style={styles.reviewBtnText}>📋 Session</Text>
               </TouchableOpacity>
@@ -206,6 +264,35 @@ export default function ClipSelectorScreen({ route, navigation }) {
                 <Text style={styles.reviewBtnText}>✕ Close</Text>
               </TouchableOpacity>
             </View>
+          </View>
+        </View>
+      ) : mode === 'summary' ? (
+        <View style={styles.summaryArea}>
+          <Text style={styles.summaryTitle}>✅ Analysis Complete</Text>
+          <View style={styles.summaryStats}>
+            <Text style={styles.summaryRow}>Frames detected: {summary?.framesDetected ?? 0}/{summary?.framesTotal ?? 0}</Text>
+            <Text style={styles.summaryRow}>Left knee avg: {summary?.left_knee_avg ?? '—'}°</Text>
+            <Text style={styles.summaryRow}>Right knee avg: {summary?.right_knee_avg ?? '—'}°</Text>
+            <Text style={styles.summaryRow}>Back angle avg: {summary?.back_angle_avg ?? '—'}°</Text>
+          </View>
+          <View style={styles.upgradeBanner}>
+            <Text style={styles.upgradeBannerText}>
+              🔒 Upgrade to Premium to see skeleton overlay, frame review and full coaching report
+            </Text>
+            <TouchableOpacity style={styles.upgradeBannerBtn} onPress={goToUpgrade}>
+              <Text style={styles.upgradeBannerBtnText}>Upgrade</Text>
+            </TouchableOpacity>
+          </View>
+          <View style={styles.reviewBtnRow}>
+            <TouchableOpacity style={[styles.reviewBtn, { backgroundColor: SKY }]} onPress={goToSessionDetail}>
+              <Text style={styles.reviewBtnText}>📋 Session</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.reviewBtn, { backgroundColor: DANGER }]}
+              onPress={() => { setMode('ready'); setSummary(null); }}
+            >
+              <Text style={styles.reviewBtnText}>✕ Close</Text>
+            </TouchableOpacity>
           </View>
         </View>
       ) : (
@@ -258,7 +345,7 @@ export default function ClipSelectorScreen({ route, navigation }) {
         </TouchableWithoutFeedback>
       )}
 
-      {mode !== 'review' && (
+      {mode !== 'review' && mode !== 'summary' && (
         <View style={styles.controls}>
 
           <View style={styles.timeRow}>
@@ -352,7 +439,7 @@ export default function ClipSelectorScreen({ route, navigation }) {
             )}
 
             {!analysing && (
-              <TouchableOpacity style={styles.exitBtn} onPress={() => navigation.goBack()}>
+              <TouchableOpacity style={styles.exitBtn} onPress={exitClipSelector}>
                 <Text style={styles.cancelBtnText}>✕</Text>
               </TouchableOpacity>
             )}
@@ -389,6 +476,21 @@ const styles = StyleSheet.create({
   statusText: { color: TEXT, fontSize: 18, fontWeight: '600' },
 
   reviewArea: { flex: 1, backgroundColor: '#000' },
+
+  summaryArea: { flex: 1, backgroundColor: DEEP, padding: 24, justifyContent: 'center' },
+  summaryTitle: { color: TEXT, fontSize: 20, fontWeight: '700', textAlign: 'center', marginBottom: 16 },
+  summaryStats: {
+    backgroundColor: 'rgba(26,138,181,0.08)', borderRadius: 12, padding: 16,
+    borderWidth: 1, borderColor: 'rgba(26,138,181,0.2)', marginBottom: 16,
+  },
+  summaryRow: { color: TEXT, fontSize: 14, marginBottom: 6 },
+  upgradeBanner: {
+    backgroundColor: 'rgba(240,165,0,0.12)', borderWidth: 1, borderColor: 'rgba(240,165,0,0.3)',
+    borderRadius: 12, padding: 14, marginBottom: 16, alignItems: 'center',
+  },
+  upgradeBannerText: { color: ACCENT, fontSize: 13, textAlign: 'center', marginBottom: 10 },
+  upgradeBannerBtn: { backgroundColor: ACCENT, paddingVertical: 8, paddingHorizontal: 20, borderRadius: 8 },
+  upgradeBannerBtnText: { color: '#fff', fontWeight: '700', fontSize: 13 },
   reviewControls: {
     position: 'absolute', bottom: 0, left: 0, right: 0,
     backgroundColor: 'rgba(6,31,46,0.9)', padding: 10,

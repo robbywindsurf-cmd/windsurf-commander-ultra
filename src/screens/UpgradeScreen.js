@@ -1,5 +1,6 @@
 import React from 'react';
 import { ScrollView, Text, View, TouchableOpacity, StyleSheet } from 'react-native';
+import { UserStore } from '@commandersuite/core';
 import Header from '../components/Header';
 import SharedCard from '../components/SharedCard';
 import { colors } from '../theme';
@@ -33,6 +34,17 @@ const TIERS = [
 ];
 
 export default function UpgradeScreen({ navigation }) {
+  // No RevenueCat purchase flow wired up yet (Phase 4), so "choosing" a tier
+  // here just sets it directly via UserStore — real purchase validation
+  // will replace this call site later without touching the UI.
+  async function chooseTier(tierKey) {
+    // updateTier() only UPDATEs an existing row, which does nothing before
+    // Apple Sign In has ever run (no user_profile row yet) — saveUser()
+    // upserts, so it works whether or not sign-in has happened.
+    await UserStore.saveUser({ appleId: null, tier: tierKey });
+    navigation.goBack();
+  }
+
   return (
     <ScrollView style={styles.scrollBg} contentContainerStyle={styles.container}>
       <Header badge="Unlock more" title="⭐ Upgrade" />
@@ -43,7 +55,7 @@ export default function UpgradeScreen({ navigation }) {
           {tier.features.map((f) => (
             <Text key={f} style={styles.feature}>• {f}</Text>
           ))}
-          <TouchableOpacity style={styles.button} onPress={() => {}}>
+          <TouchableOpacity style={styles.button} onPress={() => chooseTier(tier.key)}>
             <Text style={styles.buttonText}>Choose {tier.name}</Text>
           </TouchableOpacity>
         </SharedCard>

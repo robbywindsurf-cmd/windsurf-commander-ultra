@@ -380,6 +380,10 @@ export default function VideoScreen({ navigation }) {
       <ScrollView contentContainerStyle={styles.container} style={styles.scrollBg}>
         <Header title="🎬 Video Library" />
 
+        <FeatureGate feature="FULL_ANALYSIS" onUpgradePress={() => navigation.navigate('Upgrade')}>
+          {null}
+        </FeatureGate>
+
         <TouchableOpacity style={styles.importBtn} onPress={pickVideoFromPhone}>
           <Text style={styles.importBtnText}>📁 Import Video from Files</Text>
         </TouchableOpacity>

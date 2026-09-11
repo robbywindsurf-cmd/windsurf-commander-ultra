@@ -1,26 +1,29 @@
 import React, { useCallback, useState } from 'react';
 import { ScrollView, Text, View, StyleSheet } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
-import { SessionRepository, AnalysisRepository, FeatureGate } from '@commandersuite/core';
+import { SessionRepository, AnalysisRepository, TrackpointRepository, FeatureGate } from '@commandersuite/core';
 import Header from '../components/Header';
 import SharedCard from '../components/SharedCard';
+import SessionRouteMap from '../components/SessionRouteMap';
 import { colors } from '../theme';
 
 export default function SessionDetailScreen({ route, navigation }) {
   const { sessionId } = route.params;
   const [session, setSession] = useState(null);
   const [analyses, setAnalyses] = useState([]);
+  const [trackpoints, setTrackpoints] = useState([]);
 
   useFocusEffect(
     useCallback(() => {
       let cancelled = false;
       (async () => {
         try {
-          const [s, a] = await Promise.all([
+          const [s, a, tp] = await Promise.all([
             SessionRepository.getById(sessionId),
             AnalysisRepository.getAnalysesForSession(sessionId),
+            TrackpointRepository.getForSession(sessionId),
           ]);
-          if (!cancelled) { setSession(s); setAnalyses(a); }
+          if (!cancelled) { setSession(s); setAnalyses(a); setTrackpoints(tp); }
         } catch (err) {
           console.warn('[SessionDetail] load error:', err.message);
         }
@@ -42,7 +45,9 @@ export default function SessionDetailScreen({ route, navigation }) {
     <ScrollView style={styles.scrollBg} contentContainerStyle={styles.container}>
       <Header badge={session.date} title="📅 Session Detail" />
 
-      <SharedCard>
+      <SessionRouteMap trackpoints={trackpoints} height={340} />
+
+      <SharedCard style={{ marginTop: 16 }}>
         <Text style={styles.row}>Max speed: {session.max_speed_kn ? `${session.max_speed_kn.toFixed(1)} kn` : '—'}</Text>
         <Text style={styles.row}>Avg speed: {session.avg_speed_kn ? `${session.avg_speed_kn.toFixed(1)} kn` : '—'}</Text>
         <Text style={styles.row}>Distance: {session.distance_m ? `${(session.distance_m / 1000).toFixed(1)} km` : '—'}</Text>

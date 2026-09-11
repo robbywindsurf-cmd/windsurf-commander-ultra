@@ -4,7 +4,7 @@
 // Oracle sync, so results are written straight to commander-core's
 // AnalysisRepository instead of POSTed to windsurf-pose-coaching.
 
-import { AnalysisRepository } from '@commandersuite/core';
+import { AnalysisRepository, SessionRepository, CoachingService, UsageLimits } from '@commandersuite/core';
 import { extractFrames } from './frameExtraction';
 import { runPoseDetectionOnFrame } from './moveNet';
 import { analyseFrame } from './angleCalculations';
@@ -32,6 +32,7 @@ export async function analyseSessionVideo({
   riderTheta,
   riderPhi,
   fname,
+  userTier = 'free',
 }) {
   console.log('[Pipeline] starting, sessionId:', sessionId);
   console.log('[Pipeline] initial angles: theta=', riderTheta, 'phi=', riderPhi);
@@ -100,12 +101,7 @@ export async function analyseSessionVideo({
     right_elbow_angle: r.right_elbow_angle ?? null,
   }));
 
-  const analysisId = await AnalysisRepository.insertAnalysis({
-    session_id: sessionId,
-    video_start_utc: videoStartUtc || null,
-    fname: fname || null,
-    frames_total: frameResults.length,
-    frames_detected: detectedCount,
+  const analysisData = {
     left_knee_avg: avg(frameResults, 'left_knee_angle'),
     right_knee_avg: avg(frameResults, 'right_knee_angle'),
     back_angle_avg: avg(frameResults, 'back_angle_from_vertical'),
@@ -113,11 +109,57 @@ export async function analyseSessionVideo({
     right_elbow_avg: avg(frameResults, 'right_elbow_angle'),
     left_ankle_avg: avg(frameResults, 'left_ankle_angle_from_vertical'),
     right_ankle_avg: avg(frameResults, 'right_ankle_angle_from_vertical'),
-  });
+  };
 
-  await AnalysisRepository.insertFrames(analysisId, sessionId, framesForDb);
+  // Free tier (BASIC_BIOMECHANICS): the pipeline still runs in full and the
+  // caller gets the angle averages back for an on-screen summary, but
+  // nothing is written to AnalysisRepository — no analysis history, no
+  // coaching, matching "free tier does not get saved history".
+  let analysisId = null;
+  if (userTier !== 'free') {
+    analysisId = await AnalysisRepository.insertAnalysis({
+      session_id: sessionId,
+      video_start_utc: videoStartUtc || null,
+      fname: fname || null,
+      frames_total: frameResults.length,
+      frames_detected: detectedCount,
+      ...analysisData,
+    });
 
-  console.log('[Pipeline] saved analysis', analysisId, 'for session', sessionId);
+    await AnalysisRepository.insertFrames(analysisId, sessionId, framesForDb);
+
+    console.log('[Pipeline] saved analysis', analysisId, 'for session', sessionId);
+  }
+
+  // Free tier: angles only (BASIC_BIOMECHANICS, unlimited), no coaching.
+  // Premium/ultimate: generate a coaching report against their FULL_ANALYSIS
+  // monthly cap — still saves the angle data above even once that cap is hit,
+  // just skips the coaching text and doesn't consume more quota.
+  let coachingReport = null;
+  if (userTier !== 'free') {
+    const withinLimit = await UsageLimits.withinLimit('FULL_ANALYSIS', userTier);
+    if (withinLimit) {
+      onStatus?.('Generating coaching report…');
+      try {
+        const session = await SessionRepository.getById(sessionId);
+        coachingReport = await CoachingService.generateCoaching(session || {}, analysisData, userTier);
+        if (coachingReport) {
+          await AnalysisRepository.insertCoachingNote({
+            session_id: sessionId,
+            analysis_id: analysisId,
+            report_text: coachingReport,
+            key_findings: null,
+            source: userTier === 'ultimate' ? 'cloud_rag' : 'local_llm',
+          });
+          await UsageLimits.recordUsage('FULL_ANALYSIS');
+        }
+      } catch (err) {
+        console.warn('[Pipeline] coaching generation failed:', err.message);
+      }
+    } else {
+      onStatus?.('Monthly coaching limit reached — angles saved, no report this time.');
+    }
+  }
 
   return {
     analysisId,
@@ -126,5 +168,7 @@ export async function analyseSessionVideo({
     framesDetected: detectedCount,
     notes: notes || null,
     board: board || null,
+    coachingReport,
+    ...analysisData,
   };
 }
