@@ -206,7 +206,7 @@ export default function ClipSelectorScreen({ route, navigation }) {
 
   async function goToUpgrade() {
     await unlockToPortrait();
-    navigation.navigate('Upgrade');
+    navigation.navigate('Upgrade', { featureId: 'FULL_ANALYSIS' });
   }
 
   async function exitClipSelector() {

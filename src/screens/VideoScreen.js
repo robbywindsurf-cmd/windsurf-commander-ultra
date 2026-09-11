@@ -380,7 +380,7 @@ export default function VideoScreen({ navigation }) {
       <ScrollView contentContainerStyle={styles.container} style={styles.scrollBg}>
         <Header title="🎬 Video Library" />
 
-        <FeatureGate feature="FULL_ANALYSIS" onUpgradePress={() => navigation.navigate('Upgrade')}>
+        <FeatureGate feature="FULL_ANALYSIS" onUpgradePress={() => navigation.navigate('Upgrade', { featureId: 'FULL_ANALYSIS' })}>
           {null}
         </FeatureGate>
 

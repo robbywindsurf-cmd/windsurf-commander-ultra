@@ -69,7 +69,7 @@ export default function SessionDetailScreen({ route, navigation }) {
 
       <FeatureGate
         feature="COACHING_REPORT"
-        onUpgradePress={() => navigation.navigate('Upgrade')}
+        onUpgradePress={() => navigation.navigate('Upgrade', { featureId: 'COACHING_REPORT' })}
       >
         <SharedCard>
           <Text style={styles.row}>AI coaching report available.</Text>

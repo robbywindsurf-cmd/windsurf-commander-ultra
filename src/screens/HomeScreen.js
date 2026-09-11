@@ -1,5 +1,6 @@
 import React, { useCallback, useState } from 'react';
 import { ScrollView, Text, View, StyleSheet, TouchableOpacity, Image, RefreshControl } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import {
   UserStore, TierService, canAccess,
@@ -91,6 +92,7 @@ export default function HomeScreen({ navigation }) {
   const canSeeSkeleton = canAccess('FULL_ANALYSIS', tier);
 
   return (
+    <SafeAreaView style={styles.scrollBg} edges={['top']}>
     <ScrollView
       style={styles.scrollBg}
       contentContainerStyle={styles.container}
@@ -102,9 +104,9 @@ export default function HomeScreen({ navigation }) {
           <Text style={styles.greeting}>{greeting()} {nickname}</Text>
           <Text style={styles.dateText}>{todayLabel()}</Text>
         </View>
-        <View style={styles.tierBadge}>
+        <TouchableOpacity style={styles.tierBadge} onPress={() => navigation.navigate('Upgrade')}>
           <Text style={styles.tierBadgeText}>{tier.toUpperCase()}</Text>
-        </View>
+        </TouchableOpacity>
       </View>
 
       {/* Today's conditions */}
@@ -226,6 +228,7 @@ export default function HomeScreen({ navigation }) {
         </TouchableOpacity>
       </View>
     </ScrollView>
+    </SafeAreaView>
   );
 }
 
@@ -233,7 +236,7 @@ const styles = StyleSheet.create({
   scrollBg: { backgroundColor: colors.deep },
   container: { padding: 16, flexGrow: 1, paddingBottom: 40 },
 
-  headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 },
+  headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginTop: 12, marginBottom: 16 },
   greeting: { color: '#fff', fontSize: 22, fontWeight: '800' },
   dateText: { color: 'rgba(205,232,240,0.5)', fontSize: 13, marginTop: 2 },
   tierBadge: { backgroundColor: colors.accent, borderRadius: 8, paddingVertical: 5, paddingHorizontal: 10 },
