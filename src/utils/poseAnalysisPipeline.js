@@ -45,6 +45,7 @@ export async function analyseSessionVideo({
   onStatus?.('Starting analysis…');
 
   const frameResults = [];
+  let firstDetectedFrame = null;
 
   const initialTheta = riderTheta !== null && riderTheta !== undefined ? riderTheta : null;
   const initialPhi = riderPhi !== null && riderPhi !== undefined ? riderPhi : null;
@@ -77,6 +78,7 @@ export async function analyseSessionVideo({
     } else {
       const measurements = analyseFrame(keypoints, riderProfile);
       frameResults.push({ time_s: timeS, detected: true, ...measurements });
+      if (!firstDetectedFrame && annotatedFrame) firstDetectedFrame = annotatedFrame;
     }
 
     onProgress?.(i + 1, frames.length);
@@ -123,6 +125,7 @@ export async function analyseSessionVideo({
       fname: fname || null,
       frames_total: frameResults.length,
       frames_detected: detectedCount,
+      last_frame_base64: firstDetectedFrame,
       ...analysisData,
     });
 

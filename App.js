@@ -10,6 +10,7 @@ import { seedEquipment } from './src/utils/seedEquipment';
 import HomeScreen from './src/screens/HomeScreen';
 import WeatherScreen from './src/screens/WeatherScreen';
 import SessionsScreen from './src/screens/SessionsScreen';
+import ChatScreen from './src/screens/ChatScreen';
 import VideoScreen from './src/screens/VideoScreen';
 import GarageScreen from './src/screens/GarageScreen';
 import ClipSelectorScreen from './src/screens/ClipSelectorScreen';
@@ -24,6 +25,7 @@ const TAB_META = {
   Home: { icon: '🏠', label: 'Home' },
   Weather: { icon: '🌊', label: 'Weather' },
   Sessions: { icon: '📅', label: 'Sessions' },
+  Chat: { icon: '💬', label: 'Chat' },
   Video: { icon: '🎬', label: 'Video' },
   Garage: { icon: '⚙️', label: 'Garage' },
 };
@@ -52,6 +54,7 @@ function MainTabs() {
       <Tab.Screen name="Home" component={HomeScreen} />
       <Tab.Screen name="Weather" component={WeatherScreen} />
       <Tab.Screen name="Sessions" component={SessionsScreen} />
+      <Tab.Screen name="Chat" component={ChatScreen} />
       <Tab.Screen name="Video" component={VideoScreen} />
       <Tab.Screen name="Garage" component={GarageScreen} />
     </Tab.Navigator>
