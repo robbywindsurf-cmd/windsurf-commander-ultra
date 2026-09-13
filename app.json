@@ -11,7 +11,8 @@
       "usesAppleSignIn": false,
       "bundleIdentifier": "com.anonymous.windsurf-commander-ultra",
       "infoPlist": {
-        "NSPhotoLibraryUsageDescription": "Windsurf Commander needs access to your photos to analyse your windsurfing videos.",
+        "NSPhotoLibraryUsageDescription": "Windsurf Commander needs access to your photos to analyse your windsurfing videos and save Peak Moment cards.",
+        "NSPhotoLibraryAddUsageDescription": "Save your Peak Moment to Photos",
         "NSCameraUsageDescription": "Windsurf Commander needs camera access for live pose analysis.",
         "UTImportedTypeDeclarations": [
           {
@@ -57,6 +58,7 @@
     "plugins": [
       "expo-sqlite",
       "expo-video",
+      "llama.rn",
       "./plugins/withGoProSDK.js",
       [
         "expo-build-properties",
@@ -64,6 +66,14 @@
           "ios": {
             "deploymentTarget": "18.6"
           }
+        }
+      ],
+      "expo-sharing",
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Access Photos to save Peak Moment cards",
+          "savePhotosPermission": "Save your Peak Moment to Photos"
         }
       ]
     ]

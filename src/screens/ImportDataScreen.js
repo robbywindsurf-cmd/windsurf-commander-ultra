@@ -1,13 +1,104 @@
 import React, { useState } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, Alert } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import Papa from 'papaparse';
 import Header from '../components/Header';
 import SharedCard from '../components/SharedCard';
-import { initDb } from '../db/schema';
-import { sessionExists, insertSession } from '../db/sessions';
-import { findOrCreateEquipment } from '../db/equipment';
+import { SessionRepository, EquipmentRepository, TrackpointRepository, WeatherRepository, TideRepository } from '@commandersuite/core';
+
+// Trackpoint CSV files run to hundreds of thousands of rows / tens of MB —
+// never load the whole thing into memory. Read fixed-size byte windows,
+// parse whatever complete lines they contain, and carry any trailing
+// partial line over to the next read.
+const TP_READ_CHUNK_BYTES = 256 * 1024;
+// Rows accumulated before a DB write + progress update (the "chunks of
+// 1000 rows" the parser works in) — actual SQL statements are batched
+// smaller than this, inside insertBatch.
+const TP_PARSE_CHUNK_ROWS = 1000;
+
+function toNumberOrNullTP(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const n = Number(value);
+  return Number.isNaN(n) ? null : n;
+}
+
+// First pass: count data rows (total minus header) by scanning for '\n'
+// bytes in the same fixed-size windows, without parsing anything — gives
+// the "X / Y trackpoints" denominator before the real import pass starts.
+async function countCsvDataRows(uri, fileSize) {
+  let position = 0;
+  let newlineCount = 0;
+  let endsWithNewline = true;
+
+  while (position < fileSize) {
+    const length = Math.min(TP_READ_CHUNK_BYTES, fileSize - position);
+    const chunk = await FileSystem.readAsStringAsync(uri, { position, length, encoding: 'utf8' });
+    position += length;
+    newlineCount += (chunk.match(/\n/g) || []).length;
+    endsWithNewline = chunk.endsWith('\n');
+  }
+
+  const totalLines = newlineCount + (endsWithNewline ? 0 : 1);
+  return Math.max(0, totalLines - 1); // minus header row
+}
+
+async function importTrackpointsCsv(file, onProgress) {
+  const fileSize = file.size;
+  let position = 0;
+  let leftover = '';
+  let headerCols = null;
+  let rowBuffer = [];
+  let totalImported = 0;
+
+  while (position < fileSize) {
+    const length = Math.min(TP_READ_CHUNK_BYTES, fileSize - position);
+    const chunk = await FileSystem.readAsStringAsync(file.uri, { position, length, encoding: 'utf8' });
+    position += length;
+    const atEOF = position >= fileSize;
+
+    const text = leftover + chunk;
+    let lines = text.split('\n');
+    leftover = atEOF ? '' : lines.pop();
+
+    const parsed = Papa.parse(lines.join('\n'), { skipEmptyLines: true });
+    for (const values of parsed.data) {
+      if (!headerCols) {
+        headerCols = values.map((h) => h.trim());
+        continue;
+      }
+      const row = {};
+      headerCols.forEach((col, idx) => { row[col] = values[idx]; });
+
+      rowBuffer.push({
+        session_id: row.session_id,
+        timestamp: row.timestamp,
+        lat: toNumberOrNullTP(row.lat),
+        lon: toNumberOrNullTP(row.lon),
+        speed_ms: toNumberOrNullTP(row.speed),
+        course: toNumberOrNullTP(row.course),
+        hr: toNumberOrNullTP(row.hr),
+        elevation: toNumberOrNullTP(row.elevation),
+      });
+
+      if (rowBuffer.length >= TP_PARSE_CHUNK_ROWS) {
+        await TrackpointRepository.insertBatch(rowBuffer);
+        totalImported += rowBuffer.length;
+        onProgress(totalImported);
+        rowBuffer = [];
+      }
+    }
+  }
+
+  if (rowBuffer.length) {
+    await TrackpointRepository.insertBatch(rowBuffer);
+    totalImported += rowBuffer.length;
+    onProgress(totalImported);
+  }
+
+  await TrackpointRepository.rebuildTimestampIndex();
+  return totalImported;
+}
 
 const DEEP = '#061f2e';
 const SKY = '#1a8ab5';
@@ -22,13 +113,42 @@ function toNumberOrNull(value) {
   return Number.isNaN(n) ? null : n;
 }
 
-async function mapRowToSession(row) {
-  const boardId = row.board_name
-    ? await findOrCreateEquipment('board', row.board_name, row.board_brand, row.board_size)
-    : null;
-  const sailId = row.sail_name
-    ? await findOrCreateEquipment('sail', row.sail_name, row.sail_brand, row.sail_size)
-    : null;
+// Finds an equipment row by type + name + size within an already-fetched
+// list, inserting (and appending to the list) if it doesn't exist yet —
+// avoids re-querying getAll() for every CSV row.
+async function findOrCreateEquipment(cache, type, name, brand, size) {
+  if (!name) return null;
+  const existing = cache.find((e) => e.type === type && e.name === name && (e.size || null) === (size || null));
+  if (existing) return existing.id;
+
+  const result = await EquipmentRepository.insert({ type, name, brand: brand || null, size: size || null });
+  const id = result.lastInsertRowId;
+  cache.push({ id, type, name, brand: brand || null, size: size || null });
+  return id;
+}
+
+// Finds a gear combo by board/sail/fin ids within an already-fetched list,
+// inserting (and appending) if it doesn't exist yet.
+async function findOrCreateGearCombo(cache, boardId, sailId, finId, name) {
+  if (!boardId && !sailId && !finId) return null;
+  const existing = cache.find(
+    (c) => (c.board_id || null) === (boardId || null) && (c.sail_id || null) === (sailId || null) && (c.fin_id || null) === (finId || null)
+  );
+  if (existing) return existing.id;
+
+  const result = await EquipmentRepository.insertGearCombo({ name, board_id: boardId, sail_id: sailId, fin_id: finId });
+  const id = result.lastInsertRowId;
+  cache.push({ id, board_id: boardId, sail_id: sailId, fin_id: finId, name });
+  return id;
+}
+
+async function mapRowToSession(row, equipmentCache, gearComboCache) {
+  const boardId = await findOrCreateEquipment(equipmentCache, 'board', row.board_name, row.board_brand, row.board_size);
+  const sailId = await findOrCreateEquipment(equipmentCache, 'sail', row.sail_name, row.sail_brand, row.sail_size);
+  const finId = await findOrCreateEquipment(equipmentCache, 'fin', row.fin_name, null, row.fin_size);
+
+  const gearComboName = [row.board_name, row.sail_name].filter(Boolean).join(' / ') || null;
+  const gearComboId = await findOrCreateGearCombo(gearComboCache, boardId, sailId, finId, gearComboName);
 
   const durationMinutes = toNumberOrNull(row.duration_minutes);
 
@@ -41,18 +161,158 @@ async function mapRowToSession(row) {
     duration_s: durationMinutes != null ? Math.round(durationMinutes * 60) : null,
     max_speed_kn: toNumberOrNull(row.peak_speed_knots),
     avg_speed_kn: toNumberOrNull(row.avg_speed_knots),
-    total_trackpoints: toNumberOrNull(row.total_trackpoints),
-    board_id: boardId,
-    sail_id: sailId,
-    fin_name: row.fin_name ?? null,
-    fin_size: row.fin_size ?? null,
-    wind_speed: toNumberOrNull(row.wind_speed),
-    wind_direction: row.wind_direction ?? null,
-    temperature: toNumberOrNull(row.temperature),
+    gear_combo_id: gearComboId,
     lat: toNumberOrNull(row.rep_lat),
     lon: toNumberOrNull(row.rep_lon),
-    session_type: row.session_type ?? null,
   };
+}
+
+function safeJsonParse(value) {
+  if (!value) return {};
+  try {
+    return JSON.parse(value);
+  } catch {
+    return {};
+  }
+}
+
+async function importWeatherHistoryRows(rows) {
+  for (const row of rows) {
+    if (!row.beach_name || !row.forecast_date) continue;
+    await WeatherRepository.cache({
+      beach_name: row.beach_name,
+      forecast_date: row.forecast_date,
+      best_wind_kn: toNumberOrNull(row.best_wind_kn),
+      best_wind_dir: toNumberOrNull(row.best_wind_dir),
+      best_time: row.best_time ?? null,
+      wave_height_m: toNumberOrNull(row.wave_height_m),
+      temperature_c: toNumberOrNull(row.temperature_c),
+      forecast_json: safeJsonParse(row.forecast_json),
+    });
+  }
+  return rows.length;
+}
+
+async function importTideReadingsRows(rows) {
+  const mapped = rows
+    .filter((r) => r.station_id && r.reading_time)
+    .map((r) => ({
+      station_id: r.station_id,
+      station_name: r.station_name ?? null,
+      reading_time: r.reading_time,
+      value_m: toNumberOrNull(r.value_m),
+    }));
+  await TideRepository.insertReadingsBatch(mapped);
+  return mapped.length;
+}
+
+async function importTidePredictionsRows(rows) {
+  const mapped = rows
+    .filter((r) => r.station_id && r.prediction_time)
+    .map((r) => ({
+      station_id: r.station_id,
+      prediction_time: r.prediction_time,
+      value_m: toNumberOrNull(r.value_m),
+      tide_type: r.tide_type ?? null,
+      forecast_date: r.forecast_date ?? null,
+    }));
+  await TideRepository.insertPredictionsBatch(mapped);
+  return mapped.length;
+}
+
+// Shared UI for the three small, fully-in-memory CSV imports (weather
+// history, tide readings, tide predictions) — picks a file, parses it in
+// one shot with papaparse, hands the rows to `onImport`, and shows the
+// resulting row count.
+function SimpleCsvImportSection({ title, icon, hint, buttonLabel, onImport }) {
+  const [file, setFile] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [importedCount, setImportedCount] = useState(null);
+  const [errorMsg, setErrorMsg] = useState('');
+
+  async function pick() {
+    try {
+      setErrorMsg('');
+      setImportedCount(null);
+      const picked = await DocumentPicker.getDocumentAsync({
+        type: ['text/csv', 'text/comma-separated-values', 'public.comma-separated-values-text', '*/*'],
+        copyToCacheDirectory: true,
+      });
+      if (picked.canceled || !picked.assets || !picked.assets[0]) return;
+      const asset = picked.assets[0];
+      if (!asset.name.toLowerCase().endsWith('.csv')) {
+        setErrorMsg('Please select a .csv file');
+        return;
+      }
+      setFile(asset);
+    } catch (e) {
+      setErrorMsg(e.message);
+    }
+  }
+
+  async function runImport() {
+    if (!file) return;
+    setBusy(true);
+    setErrorMsg('');
+    setImportedCount(null);
+    try {
+      const csvText = await FileSystem.readAsStringAsync(file.uri);
+      const parsed = Papa.parse(csvText, { header: true, skipEmptyLines: true });
+      if (parsed.errors && parsed.errors.length > 0) {
+        throw new Error(parsed.errors[0].message);
+      }
+      const count = await onImport(parsed.data);
+      setImportedCount(count);
+    } catch (e) {
+      setErrorMsg(e.message || 'Import failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <View>
+      <Text style={[styles.sectionLabel, { marginTop: 20 }]}>{icon} {title}</Text>
+      <TouchableOpacity
+        style={[styles.dropZone, file && styles.dropZoneActive]}
+        onPress={pick}
+        disabled={busy}
+        accessibilityLabel={`Tap to select ${title} CSV file`}
+      >
+        <Text style={styles.dropIcon}>{icon}</Text>
+        <Text style={styles.dropTitle}>Tap to select CSV file</Text>
+        <Text style={styles.dropSub}>{hint}</Text>
+      </TouchableOpacity>
+
+      {file && (
+        <SharedCard style={styles.previewCard}>
+          <Text style={styles.previewLabel}>📋 File Selected</Text>
+          <Text style={styles.previewName}>{file.name}</Text>
+          <Text style={styles.previewSize}>{file.size ? (file.size / 1024).toFixed(1) + ' KB' : '—'}</Text>
+        </SharedCard>
+      )}
+
+      {file && importedCount == null && (
+        <TouchableOpacity style={[styles.importBtn, busy && styles.importBtnDisabled]} onPress={runImport} disabled={busy}>
+          {busy && <ActivityIndicator color="#fff" size="small" style={{ marginRight: 8 }} />}
+          <Text style={styles.importBtnText}>{busy ? 'Importing...' : buttonLabel}</Text>
+        </TouchableOpacity>
+      )}
+
+      {!!errorMsg && <Text style={styles.errorText}>⚠️ {errorMsg}</Text>}
+
+      {importedCount != null && (
+        <SharedCard style={styles.resultCard}>
+          <View style={styles.resultCenter}>
+            <Text style={styles.resultIcon}>✅</Text>
+            <Text style={[styles.resultTitle, { color: SAFE }]}>
+              {importedCount.toLocaleString()} row{importedCount === 1 ? '' : 's'} imported
+            </Text>
+          </View>
+        </SharedCard>
+      )}
+    </View>
+  );
 }
 
 export default function ImportDataScreen({ navigation }) {
@@ -65,6 +325,70 @@ export default function ImportDataScreen({ navigation }) {
   const [skippedCount, setSkippedCount] = useState(0);
   const [errorMsg, setErrorMsg] = useState('');
   const [done, setDone] = useState(false);
+
+  const [tpFile, setTpFile] = useState(null);
+  const [tpImporting, setTpImporting] = useState(false);
+  const [tpTotalRows, setTpTotalRows] = useState(0);
+  const [tpImportedRows, setTpImportedRows] = useState(0);
+  const [tpErrorMsg, setTpErrorMsg] = useState('');
+  const [tpDone, setTpDone] = useState(false);
+
+  async function pickTrackpointsFile() {
+    try {
+      setTpErrorMsg('');
+      setTpDone(false);
+      const picked = await DocumentPicker.getDocumentAsync({
+        type: ['text/csv', 'text/comma-separated-values', 'public.comma-separated-values-text', '*/*'],
+        copyToCacheDirectory: true,
+      });
+      if (picked.canceled || !picked.assets || !picked.assets[0]) return;
+      const asset = picked.assets[0];
+      if (!asset.name.toLowerCase().endsWith('.csv')) {
+        setTpErrorMsg('Please select a .csv file');
+        return;
+      }
+      setTpFile(asset);
+      setTpTotalRows(0);
+      setTpImportedRows(0);
+    } catch (e) {
+      setTpErrorMsg(e.message);
+    }
+  }
+
+  function confirmStartTrackpointsImport() {
+    if (!tpFile) return;
+    const sizeMb = (tpFile.size / (1024 * 1024)).toFixed(0);
+    Alert.alert(
+      'Import GPS Trackpoints',
+      `${sizeMb}MB file, takes 5-10 minutes, keep app open.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Import', onPress: startTrackpointsImport },
+      ]
+    );
+  }
+
+  async function startTrackpointsImport() {
+    if (!tpFile) return;
+    setTpErrorMsg('');
+    setTpDone(false);
+    setTpImporting(true);
+    setTpImportedRows(0);
+
+    try {
+      const totalRows = await countCsvDataRows(tpFile.uri, tpFile.size);
+      setTpTotalRows(totalRows);
+
+      const imported = await importTrackpointsCsv(tpFile, (count) => setTpImportedRows(count));
+
+      setTpImportedRows(imported);
+      setTpImporting(false);
+      setTpDone(true);
+    } catch (e) {
+      setTpErrorMsg(e.message || 'Trackpoint import failed');
+      setTpImporting(false);
+    }
+  }
 
   async function pickFile() {
     try {
@@ -108,19 +432,22 @@ export default function ImportDataScreen({ navigation }) {
       setParsing(false);
       setImporting(true);
 
-      await initDb();
+      const [equipmentCache, gearComboCache] = await Promise.all([
+        EquipmentRepository.getAll(null, { includeInactive: true }),
+        EquipmentRepository.getGearCombos(),
+      ]);
 
       let imported = 0;
       let skipped = 0;
 
       for (let i = 0; i < rows.length; i++) {
         const row = rows[i];
-        const exists = await sessionExists(row.session_id);
-        if (exists) {
+        const existing = await SessionRepository.getById(row.session_id);
+        if (existing) {
           skipped += 1;
         } else {
-          const session = await mapRowToSession(row);
-          await insertSession(session);
+          const session = await mapRowToSession(row, equipmentCache, gearComboCache);
+          await SessionRepository.insert(session);
           imported += 1;
         }
         setProcessedRows(i + 1);
@@ -213,6 +540,90 @@ export default function ImportDataScreen({ navigation }) {
           </View>
         </SharedCard>
       )}
+
+      <Text style={[styles.sectionLabel, { marginTop: 20 }]}>📍 GPS Trackpoints</Text>
+      <TouchableOpacity
+        style={[styles.dropZone, tpFile && styles.dropZoneActive]}
+        onPress={pickTrackpointsFile}
+        disabled={tpImporting}
+        accessibilityLabel="Tap to select trackpoints CSV file"
+      >
+        <Text style={styles.dropIcon}>🛰️</Text>
+        <Text style={styles.dropTitle}>Tap to select trackpoints CSV file</Text>
+        <Text style={styles.dropSub}>session_id, timestamp, lat, lon, speed, course, hr, elevation</Text>
+      </TouchableOpacity>
+
+      {tpFile && (
+        <SharedCard style={styles.previewCard}>
+          <Text style={styles.previewLabel}>📋 File Selected</Text>
+          <Text style={styles.previewName}>{tpFile.name}</Text>
+          <Text style={styles.previewSize}>
+            {tpFile.size ? (tpFile.size / (1024 * 1024)).toFixed(1) + ' MB' : '—'}
+          </Text>
+        </SharedCard>
+      )}
+
+      {tpFile && !tpDone && (
+        <TouchableOpacity
+          style={[styles.importBtn, tpImporting && styles.importBtnDisabled]}
+          onPress={confirmStartTrackpointsImport}
+          disabled={tpImporting}
+        >
+          {tpImporting && <ActivityIndicator color="#fff" size="small" style={{ marginRight: 8 }} />}
+          <Text style={styles.importBtnText}>
+            {tpImporting ? 'Importing...' : '📥 Import GPS Trackpoints'}
+          </Text>
+        </TouchableOpacity>
+      )}
+
+      {!!tpErrorMsg && <Text style={styles.errorText}>⚠️ {tpErrorMsg}</Text>}
+
+      {(tpImporting || tpDone) && tpTotalRows > 0 && (
+        <SharedCard style={styles.progressCard}>
+          <Text style={styles.progressLabel}>
+            {tpImportedRows.toLocaleString()} / {tpTotalRows.toLocaleString()} trackpoints
+          </Text>
+          <View style={styles.progressTrack}>
+            <View style={[styles.progressFill, { width: `${Math.round((tpImportedRows / tpTotalRows) * 100)}%` }]} />
+          </View>
+        </SharedCard>
+      )}
+
+      {tpDone && (
+        <SharedCard style={styles.resultCard}>
+          <View style={styles.resultCenter}>
+            <Text style={styles.resultIcon}>✅</Text>
+            <Text style={[styles.resultTitle, { color: SAFE }]}>
+              {tpImportedRows.toLocaleString()} trackpoints imported
+            </Text>
+            <Text style={styles.resultSub}>GPS maps now available</Text>
+          </View>
+        </SharedCard>
+      )}
+
+      <SimpleCsvImportSection
+        title="Weather History"
+        icon="🌦️"
+        hint="beach_name, forecast_date, best_wind_kn, best_wind_dir, best_time, wave_height_m, temperature_c, forecast_json"
+        buttonLabel="📥 Import Weather History"
+        onImport={importWeatherHistoryRows}
+      />
+
+      <SimpleCsvImportSection
+        title="Tide Readings"
+        icon="🌊"
+        hint="station_id, station_name, reading_time, value_m"
+        buttonLabel="📥 Import Tide Readings"
+        onImport={importTideReadingsRows}
+      />
+
+      <SimpleCsvImportSection
+        title="Tide Predictions"
+        icon="📈"
+        hint="station_id, prediction_time, value_m, tide_type, forecast_date"
+        buttonLabel="📥 Import Tide Predictions"
+        onImport={importTidePredictionsRows}
+      />
     </ScrollView>
   );
 }

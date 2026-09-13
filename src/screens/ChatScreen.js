@@ -1,8 +1,8 @@
 // ChatScreen.js — AI coach chat, Premium+ only.
 // Adapted from the production app's ChatScreen.js: no Oracle webhook, no
 // remote AI. Context (recent sessions, last analysis, weather, equipment)
-// is pulled from local SQLite and passed to commander-core's CoachingService
-// (a stub AI for now — real inference lands in a later phase).
+// is pulled from local SQLite and passed to commander-core's CoachingService,
+// which runs Phi-3 Mini on-device via llama.rn once the model is downloaded.
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
@@ -12,7 +12,7 @@ import {
 import Markdown from 'react-native-markdown-display';
 import { useFocusEffect } from '@react-navigation/native';
 import {
-  TierService, CoachingService,
+  TierService, CoachingService, ModelManager,
   SessionRepository, AnalysisRepository, WeatherRepository, EquipmentRepository,
 } from '@commandersuite/core';
 import Header from '../components/Header';
@@ -61,11 +61,28 @@ export default function ChatScreen({ navigation }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
+  const [modelDownloaded, setModelDownloaded] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState(0);
   const listRef = useRef(null);
 
   useFocusEffect(useCallback(() => {
     TierService.getCachedTier().then(setTier);
+    ModelManager.isModelDownloaded().then(setModelDownloaded);
   }, []));
+
+  const handleDownloadModel = async () => {
+    setDownloading(true);
+    setDownloadProgress(0);
+    try {
+      await ModelManager.downloadModel((progress) => setDownloadProgress(progress));
+      setModelDownloaded(true);
+    } catch (e) {
+      // leave modelDownloaded false; user can retry
+    } finally {
+      setDownloading(false);
+    }
+  };
 
   useEffect(() => {
     if (messages.length) {
@@ -157,6 +174,27 @@ export default function ChatScreen({ navigation }) {
       keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
     >
       <Header title="💬 Chat" />
+      <View style={styles.modelBar}>
+        {modelDownloaded ? (
+          <View style={styles.modelBadge}>
+            <Text style={styles.modelBadgeText}>✅ AI Ready (on-device)</Text>
+          </View>
+        ) : downloading ? (
+          <View style={styles.modelBadge}>
+            <Text style={styles.modelBadgeText}>
+              Downloading model… {Math.round(downloadProgress * 100)}%
+            </Text>
+            <View style={styles.progressTrack}>
+              <View style={[styles.progressFill, { width: `${Math.round(downloadProgress * 100)}%` }]} />
+            </View>
+          </View>
+        ) : (
+          <TouchableOpacity style={styles.downloadBtn} onPress={handleDownloadModel} accessibilityLabel="Download AI Model">
+            <Text style={styles.downloadBtnText}>⬇️ Download AI Model</Text>
+            <Text style={styles.downloadBtnSub}>Requires 2.3GB storage</Text>
+          </TouchableOpacity>
+        )}
+      </View>
       <FlatList
         ref={listRef}
         data={messages}
@@ -190,6 +228,35 @@ const styles = StyleSheet.create({
   flex: { flex: 1, backgroundColor: colors.deep },
   messagesList: { flex: 1, backgroundColor: colors.deep },
   messagesContent: { padding: 14, flexGrow: 1 },
+
+  modelBar: { paddingHorizontal: 14, paddingTop: 10 },
+  modelBadge: {
+    backgroundColor: 'rgba(26,138,181,0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(26,138,181,0.25)',
+    borderRadius: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+  },
+  modelBadgeText: { color: colors.text, fontSize: 12, fontWeight: '600' },
+  progressTrack: {
+    height: 4,
+    backgroundColor: 'rgba(205,232,240,0.15)',
+    borderRadius: 2,
+    marginTop: 6,
+    overflow: 'hidden',
+  },
+  progressFill: { height: 4, backgroundColor: colors.accent, borderRadius: 2 },
+  downloadBtn: {
+    backgroundColor: 'rgba(26,138,181,0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(26,138,181,0.25)',
+    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+  },
+  downloadBtnText: { color: colors.accent, fontSize: 13, fontWeight: '700' },
+  downloadBtnSub: { color: 'rgba(205,232,240,0.4)', fontSize: 11, marginTop: 2 },
 
   welcome: { alignItems: 'center', paddingTop: 24, paddingHorizontal: 8 },
   welcomeIcon: { fontSize: 28, marginBottom: 6 },

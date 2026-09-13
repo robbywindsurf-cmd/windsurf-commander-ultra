@@ -71,7 +71,7 @@ export default function HomeScreen({ navigation }) {
       const session = recent?.[0] || null;
       setLastSession(session);
       if (session) {
-        setLastSessionTrackpoints(await TrackpointRepository.getForSession(session.session_id));
+        setLastSessionTrackpoints(await TrackpointRepository.getSampledForSession(session.session_id, 80));
       } else {
         setLastSessionTrackpoints([]);
       }
@@ -225,6 +225,15 @@ export default function HomeScreen({ navigation }) {
         <TouchableOpacity style={styles.quickBtn} onPress={() => navigation.navigate('Weather')}>
           <Text style={styles.quickBtnIcon}>🌊</Text>
           <Text style={styles.quickBtnText}>Weather</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.quickBtn}
+          onPress={() => lastSession
+            ? navigation.navigate('PeakMoment', { sessionId: lastSession.session_id })
+            : navigation.navigate('Sessions')}
+        >
+          <Text style={styles.quickBtnIcon}>🏆</Text>
+          <Text style={styles.quickBtnText}>Peak Moment</Text>
         </TouchableOpacity>
       </View>
     </ScrollView>

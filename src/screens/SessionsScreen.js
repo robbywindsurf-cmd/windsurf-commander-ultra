@@ -16,6 +16,11 @@ function formatDurationMin(durationS) {
   return durationS ? `${Math.round(durationS / 60)} min` : null;
 }
 
+// Only the most recent sessions get a map preview — with real historical
+// data, loading (even sampled) trackpoints for every session at once was
+// what crashed this screen. Everything older is summary-only.
+const MAP_PREVIEW_COUNT = 3;
+
 export default function SessionsScreen({ navigation }) {
   const [sessions, setSessions] = useState([]);
   const [gearCombos, setGearCombos] = useState({});
@@ -35,8 +40,9 @@ export default function SessionsScreen({ navigation }) {
       setSessions(all);
       setGearCombos(Object.fromEntries(combos.map((c) => [c.id, c])));
 
+      const recent = all.slice(0, MAP_PREVIEW_COUNT);
       const tpEntries = await Promise.all(
-        all.map(async (s) => [s.session_id, await TrackpointRepository.getForSession(s.session_id)])
+        recent.map(async (s) => [s.session_id, await TrackpointRepository.getSampledForSession(s.session_id, 80)])
       );
       setTrackpointsBySession(Object.fromEntries(tpEntries));
     } catch (err) {
@@ -84,6 +90,14 @@ export default function SessionsScreen({ navigation }) {
         <Text style={styles.importBtnText}>📥 Import FIT File</Text>
       </TouchableOpacity>
 
+      <TouchableOpacity
+        style={styles.importHistoricalBtn}
+        onPress={() => navigation.navigate('ImportData')}
+        accessibilityLabel="Import historical data"
+      >
+        <Text style={styles.importHistoricalBtnText}>🗄️ Import historical data</Text>
+      </TouchableOpacity>
+
       {!!importError && <Text style={styles.errorText}>⚠️ {importError}</Text>}
 
       {importResult && (
@@ -108,7 +122,7 @@ export default function SessionsScreen({ navigation }) {
       {sessions.length === 0 ? (
         <Text style={styles.emptyText}>No sessions yet. Import a FIT file to get started.</Text>
       ) : (
-        sessions.map((s) => {
+        sessions.map((s, i) => {
           const gear = gearCombos[s.gear_combo_id];
           const stats = [
             s.max_speed_kn != null ? `${s.max_speed_kn.toFixed(1)} kn max` : 'No speed data',
@@ -117,6 +131,7 @@ export default function SessionsScreen({ navigation }) {
           ].filter(Boolean).join(' · ');
 
           const goToDetail = () => navigation.navigate('SessionDetail', { sessionId: s.session_id });
+          const showMap = i < MAP_PREVIEW_COUNT;
 
           return (
             <TouchableOpacity key={s.session_id} onPress={goToDetail}>
@@ -129,7 +144,7 @@ export default function SessionsScreen({ navigation }) {
                       .filter(Boolean).join(' · ')}
                   </Text>
                 )}
-                <SessionMapPreview trackpoints={trackpointsBySession[s.session_id]} onPress={goToDetail} />
+                {showMap && <SessionMapPreview trackpoints={trackpointsBySession[s.session_id]} onPress={goToDetail} />}
               </SharedCard>
             </TouchableOpacity>
           );
@@ -187,6 +202,11 @@ const styles = StyleSheet.create({
     alignItems: 'center', marginBottom: 12,
   },
   importBtnText: { color: '#fff', fontWeight: '700', fontSize: 14 },
+  importHistoricalBtn: {
+    backgroundColor: 'rgba(26,138,181,0.1)', borderWidth: 1, borderColor: 'rgba(26,138,181,0.25)',
+    paddingVertical: 10, borderRadius: 12, alignItems: 'center', marginBottom: 12,
+  },
+  importHistoricalBtnText: { color: colors.text, fontWeight: '600', fontSize: 13 },
   errorText: { color: colors.danger, fontSize: 12, textAlign: 'center', marginBottom: 10 },
   resultTitle: { color: colors.text, fontWeight: '700', fontSize: 14, marginBottom: 4 },
   resultText: { color: 'rgba(205,232,240,0.7)', fontSize: 12, marginBottom: 2 },

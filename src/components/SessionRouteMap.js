@@ -8,7 +8,11 @@ import { toMapCoords, boundsRegion, speedColor, findPeak } from '../utils/geo';
 // speed colour, a subsampled set of points are tappable (Callout shows
 // speed), and the single fastest point gets a flag marker.
 export default function SessionRouteMap({ trackpoints, height = 320 }) {
-  const coords = toMapCoords(trackpoints, 1500);
+  // Each point-pair below renders as its own native Polyline (so it can
+  // carry a per-segment speed colour) — capped well under 1500 since that
+  // many individual native map overlays is what was crashing this screen
+  // once historical-import sessions started carrying dense GPS data.
+  const coords = toMapCoords(trackpoints, 400);
   const region = boundsRegion(coords);
   const [selected, setSelected] = useState(null);
 

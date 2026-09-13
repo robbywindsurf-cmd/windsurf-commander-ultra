@@ -16,6 +16,8 @@ import GarageScreen from './src/screens/GarageScreen';
 import ClipSelectorScreen from './src/screens/ClipSelectorScreen';
 import UpgradeScreen from './src/screens/UpgradeScreen';
 import SessionDetailScreen from './src/screens/SessionDetailScreen';
+import ImportDataScreen from './src/screens/ImportDataScreen';
+import PeakMomentScreen from './src/screens/PeakMomentScreen';
 import { colors } from './src/theme';
 
 const Tab = createBottomTabNavigator();
@@ -120,6 +122,8 @@ export default function App() {
         />
         <Stack.Screen name="Upgrade" component={UpgradeScreen} options={{ presentation: 'modal' }} />
         <Stack.Screen name="SessionDetail" component={SessionDetailScreen} />
+        <Stack.Screen name="ImportData" component={ImportDataScreen} />
+        <Stack.Screen name="PeakMoment" component={PeakMomentScreen} />
       </Stack.Navigator>
       <StatusBar style="light" />
     </NavigationContainer>
