@@ -1,9 +1,14 @@
 import {
   getDb, SessionRepository, AnalysisRepository, EquipmentRepository, BeachRepository, TideRepository,
+  WeatherRepository,
 } from '@commandersuite/core';
 
 const MPS_TO_KN = 1.94384;
 const COMPASS = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
+
+// Torpoint, Cornwall — used when a session has no lat/lon of its own.
+const DEFAULT_LAT = 50.37154;
+const DEFAULT_LON = -4.1908264;
 
 function degreesToCompass(deg) {
   if (deg == null) return null;
@@ -18,6 +23,73 @@ function describeKneeBend(angle) {
   if (angle >= 145) return 'Slightly bent';
   if (angle >= 115) return 'Moderate bend';
   return 'Deep bend';
+}
+
+// Backfills weather_cache for a session date with no entry, from Open-Meteo's
+// free historical archive (weather) + marine (wave height) APIs. Picks the
+// hourly reading nearest the session's start time and caches it exactly
+// like a live forecast fetch would, so future lookups hit weather_cache.
+async function backfillHistoricalWeather(session, beachName) {
+  const lat = session.lat ?? DEFAULT_LAT;
+  const lon = session.lon ?? DEFAULT_LON;
+  const date = session.date;
+  if (!date) return null;
+
+  try {
+    const archiveUrl =
+      `https://archive-api.open-meteo.com/v1/archive?latitude=${lat}&longitude=${lon}` +
+      `&start_date=${date}&end_date=${date}` +
+      `&hourly=wind_speed_10m,wind_direction_10m,temperature_2m&wind_speed_unit=kn&timezone=UTC`;
+    const marineUrl =
+      `https://marine-api.open-meteo.com/v1/marine?latitude=${lat}&longitude=${lon}` +
+      `&start_date=${date}&end_date=${date}` +
+      `&hourly=wave_height&models=best_match&timezone=UTC`;
+
+    const [archiveRes, marineRes] = await Promise.all([fetch(archiveUrl), fetch(marineUrl)]);
+    if (!archiveRes.ok) throw new Error(`Open-Meteo archive error ${archiveRes.status}`);
+    const archive = await archiveRes.json();
+    const marine = marineRes.ok ? await marineRes.json() : null;
+
+    const times = archive?.hourly?.time || [];
+    if (!times.length) return null;
+
+    const targetMs = session.start_time
+      ? new Date(`${date}T${session.start_time}`).getTime()
+      : new Date(`${date}T12:00`).getTime();
+
+    let bestIdx = 0;
+    let bestDiff = Infinity;
+    times.forEach((t, i) => {
+      const diff = Math.abs(new Date(t).getTime() - targetMs);
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        bestIdx = i;
+      }
+    });
+
+    let waveHeightM = null;
+    if (marine?.hourly?.time) {
+      const mIdx = marine.hourly.time.indexOf(times[bestIdx]);
+      waveHeightM = mIdx >= 0 ? marine.hourly.wave_height?.[mIdx] ?? null : null;
+    }
+
+    const weather = {
+      beach_name: beachName || 'Torpoint',
+      forecast_date: date,
+      best_wind_kn: archive.hourly.wind_speed_10m?.[bestIdx] ?? null,
+      best_wind_dir: archive.hourly.wind_direction_10m?.[bestIdx] ?? null,
+      best_time: times[bestIdx]?.slice(11, 16) ?? null,
+      wave_height_m: waveHeightM,
+      temperature_c: archive.hourly.temperature_2m?.[bestIdx] ?? null,
+      forecast_json: { source: 'open-meteo-archive', hourly_index: bestIdx },
+    };
+
+    await WeatherRepository.cache(weather);
+    return weather;
+  } catch (err) {
+    console.warn('[PeakMomentService] weather backfill failed:', err.message);
+    return null;
+  }
 }
 
 function nearestBeachName(beaches, beachId, lat, lon) {
@@ -77,6 +149,9 @@ export const PeakMomentService = {
       ? gearCombos.find((c) => c.id === session.gear_combo_id)
       : null;
 
+    const beachName = nearestBeachName(beaches, session?.beach_id, peakTp.lat, peakTp.lon);
+    const weather = weatherRow || (session ? await backfillHistoricalWeather(session, beachName) : null);
+
     return {
       sessionId,
       date: session?.date ?? null,
@@ -84,12 +159,12 @@ export const PeakMomentService = {
       peakTimestamp: peakTp.timestamp,
       lat: peakTp.lat,
       lon: peakTp.lon,
-      beachName: nearestBeachName(beaches, session?.beach_id, peakTp.lat, peakTp.lon),
+      beachName,
       skeletonFrame: lastAnalysis?.last_frame_base64 ?? null,
-      windKn: weatherRow?.best_wind_kn ?? null,
-      windDir: degreesToCompass(weatherRow?.best_wind_dir),
-      waveHeightM: weatherRow?.wave_height_m ?? null,
-      tempC: weatherRow?.temperature_c ?? null,
+      windKn: weather?.best_wind_kn ?? null,
+      windDir: degreesToCompass(weather?.best_wind_dir),
+      waveHeightM: weather?.wave_height_m ?? null,
+      tempC: weather?.temperature_c ?? null,
       boardName: gearCombo?.board_name ?? null,
       sailName: gearCombo?.sail_name ?? null,
       sailSize: gearCombo?.sail_size ?? null,
