@@ -4,6 +4,7 @@ import Header from '../components/Header';
 import SharedCard from '../components/SharedCard';
 import { WeatherBackfillService } from '../services/WeatherBackfillService';
 import { RameHeadWindService } from '../services/RameHeadWindService';
+import { AnalysisRepository, EmbeddingService, TierService, canAccess } from '@commandersuite/core';
 import { colors } from '../theme';
 
 const DEEP = colors.deep;
@@ -12,6 +13,16 @@ const TEXT = colors.text;
 const ACCENT = '#f0a500';
 const SAFE = '#2a9d8f';
 const DANGER = colors.danger;
+
+// RED — nothing indexed yet. AMBER — indexing is running, or some sessions
+// are indexed but not all (stale relative to the latest session). GREEN —
+// fully indexed and up to date.
+function indexStatusColor(indexing, indexStatus) {
+  if (indexing) return ACCENT;
+  if (!indexStatus || indexStatus.indexed === 0) return DANGER;
+  if (indexStatus.indexed < indexStatus.total) return ACCENT;
+  return SAFE;
+}
 
 export default function SettingsScreen({ navigation }) {
   const [missingWeatherCount, setMissingWeatherCount] = useState(null);
@@ -64,6 +75,49 @@ export default function SettingsScreen({ navigation }) {
       setBackfillError(e.message || 'Backfill failed');
     } finally {
       setBackfillRunning(false);
+    }
+  }
+
+  const [tier, setTier] = useState(null);
+  const [indexStatus, setIndexStatus] = useState(null); // { indexed, total, lastIndexedAt }
+  const [indexing, setIndexing] = useState(false);
+  const [indexPhase, setIndexPhase] = useState('sessions'); // 'sessions' | 'notes'
+  const [indexProgress, setIndexProgress] = useState({ completed: 0, total: 0 });
+  const [indexResult, setIndexResult] = useState(null); // { sessions, notes }
+  const [indexError, setIndexError] = useState('');
+
+  useEffect(() => {
+    TierService.getCachedTier().then(setTier);
+    EmbeddingService.getIndexStatus().then(setIndexStatus).catch(() => {});
+  }, []);
+
+  async function runIndexAllSessions() {
+    setIndexing(true);
+    setIndexError('');
+    setIndexResult(null);
+    setIndexPhase('sessions');
+    setIndexProgress({ completed: 0, total: 0 });
+    try {
+      const sessionsResult = await EmbeddingService.embedAllSessions((completed, total) =>
+        setIndexProgress({ completed, total })
+      );
+
+      const notes = await AnalysisRepository.getAllCoachingNotes();
+      setIndexPhase('notes');
+      setIndexProgress({ completed: 0, total: notes.length });
+      let notesIndexed = 0;
+      for (let i = 0; i < notes.length; i++) {
+        const id = await EmbeddingService.embedCoachingNote(notes[i]);
+        if (id != null) notesIndexed += 1;
+        setIndexProgress({ completed: i + 1, total: notes.length });
+      }
+
+      setIndexResult({ sessions: sessionsResult.embedded, notes: notesIndexed });
+      setIndexStatus(await EmbeddingService.getIndexStatus());
+    } catch (e) {
+      setIndexError(e.message || 'Indexing failed');
+    } finally {
+      setIndexing(false);
     }
   }
 
@@ -175,6 +229,91 @@ export default function SettingsScreen({ navigation }) {
         </SharedCard>
       )}
 
+      <Text style={styles.sectionLabel}>🧠 AI Semantic Search</Text>
+      {tier === null ? (
+        <SharedCard style={styles.previewCard}>
+          <Text style={styles.previewName}>Checking access…</Text>
+        </SharedCard>
+      ) : !canAccess('FULL_ANALYSIS', tier) ? (
+        <SharedCard style={styles.previewCard}>
+          <Text style={styles.previewName}>🔒 AI Semantic Search is a Premium feature</Text>
+          <Text style={styles.previewSize}>Index your sessions for smarter AI coaching</Text>
+        </SharedCard>
+      ) : (
+        <>
+          <SharedCard style={styles.previewCard}>
+            {!indexStatus ? (
+              <Text style={styles.previewName}>Checking index status…</Text>
+            ) : (
+              <>
+                <View style={styles.statusRow}>
+                  <View style={[styles.statusDot, { backgroundColor: indexStatusColor(indexing, indexStatus) }]} />
+                  <Text style={styles.previewName}>
+                    {indexStatus.indexed > 0
+                      ? `${indexStatus.indexed} of ${indexStatus.total} sessions indexed`
+                      : 'Not indexed yet'}
+                  </Text>
+                </View>
+                {indexStatus.lastIndexedAt && (
+                  <Text style={styles.previewSize}>Last indexed: {indexStatus.lastIndexedAt}</Text>
+                )}
+                <Text style={styles.previewSize}>
+                  Embeddings run on-device via the already-downloaded Phi-3 Mini model — first indexing may take several minutes.
+                </Text>
+              </>
+            )}
+          </SharedCard>
+
+          {!indexing && !indexResult && indexStatus && indexStatus.indexed < indexStatus.total && (
+            <>
+              <TouchableOpacity activeOpacity={0.7} style={styles.importBtn} onPress={runIndexAllSessions}>
+                <Text style={styles.importBtnText}>🧠 Index All Sessions</Text>
+              </TouchableOpacity>
+              <Text style={styles.estimateText}>
+                ~{(indexStatus.total - indexStatus.indexed) * 3} seconds estimated
+              </Text>
+            </>
+          )}
+
+          {indexing && (
+            <SharedCard style={styles.progressCard}>
+              <Text style={styles.progressLabel}>
+                {indexPhase === 'notes' ? 'Indexing coaching notes…' : 'Indexing sessions…'}
+              </Text>
+              <View style={styles.progressTrack}>
+                <View
+                  style={[
+                    styles.progressFill,
+                    { width: `${indexProgress.total ? Math.round((indexProgress.completed / indexProgress.total) * 100) : 0}%` },
+                  ]}
+                />
+              </View>
+              <Text style={styles.progressCount}>
+                {indexProgress.completed} / {indexProgress.total} {indexPhase === 'notes' ? 'coaching notes' : 'sessions'}
+              </Text>
+            </SharedCard>
+          )}
+
+          {!!indexError && <Text style={styles.errorText}>⚠️ {indexError}</Text>}
+
+          {indexResult && (
+            <SharedCard style={styles.resultCard}>
+              <View style={styles.resultCenter}>
+                <Text style={styles.resultIcon}>✅</Text>
+                <Text style={[styles.resultTitle, { color: SAFE }]}>
+                  {indexResult.sessions} session{indexResult.sessions === 1 ? '' : 's'} indexed
+                </Text>
+                {indexResult.notes > 0 && (
+                  <Text style={styles.resultSub}>
+                    + {indexResult.notes} coaching note{indexResult.notes === 1 ? '' : 's'} indexed
+                  </Text>
+                )}
+              </View>
+            </SharedCard>
+          )}
+        </>
+      )}
+
       <TouchableOpacity activeOpacity={0.7} style={styles.viewImportBtn} onPress={() => navigation.navigate('ImportData')}>
         <Text style={styles.viewImportBtnText}>📥 Import Historical Data (CSV)</Text>
       </TouchableOpacity>
@@ -192,6 +331,9 @@ const styles = StyleSheet.create({
   previewName: { color: TEXT, fontSize: 13, fontWeight: '600' },
   previewSize: { color: 'rgba(205,232,240,0.4)', fontSize: 10, marginTop: 2 },
 
+  statusRow: { flexDirection: 'row', alignItems: 'center' },
+  statusDot: { width: 9, height: 9, borderRadius: 4.5, marginRight: 7 },
+
   importBtn: {
     flexDirection: 'row',
     backgroundColor: SKY,
@@ -202,6 +344,7 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   importBtnText: { color: '#fff', fontSize: 15, fontWeight: '600' },
+  estimateText: { color: 'rgba(205,232,240,0.4)', fontSize: 11, textAlign: 'center', marginTop: -4, marginBottom: 10 },
 
   errorText: { color: DANGER, textAlign: 'center', fontSize: 13, marginBottom: 10 },
 
