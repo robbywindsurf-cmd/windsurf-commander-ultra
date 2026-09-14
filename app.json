@@ -58,7 +58,13 @@
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      "expo-sqlite",
+      [
+        "expo-sqlite",
+        {
+          "ios": { "withSQLiteVecExtension": true },
+          "android": { "withSQLiteVecExtension": true }
+        }
+      ],
       "expo-video",
       "llama.rn",
       "./plugins/withGoProSDK.js",

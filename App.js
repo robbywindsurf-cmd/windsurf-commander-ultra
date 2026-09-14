@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, View, InteractionManager } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { getDb, UserStore } from '@commandersuite/core';
+import { getDb, UserStore, TierService, EmbeddingService } from '@commandersuite/core';
 import { seedEquipment } from './src/utils/seedEquipment';
 import { seedBeaches } from './src/utils/seedBeaches';
 import FavouriteBeachPicker from './src/components/FavouriteBeachPicker';
@@ -111,6 +111,19 @@ export default function App() {
         const favourite = await UserStore.getFavouriteBeach();
         setFavouriteBeach(favourite);
         setDbReady(true);
+
+        // RAG embeddings are a Premium+ feature — skip entirely for free
+        // tier. embedAllSessions() itself skips sessions already embedded,
+        // so this is cheap on every launch after the first, and running it
+        // after interactions finish keeps app startup from stalling on it.
+        const tier = await TierService.getCachedTier();
+        if (tier === 'premium' || tier === 'ultimate') {
+          InteractionManager.runAfterInteractions(() => {
+            EmbeddingService.embedAllSessions().catch((err) => {
+              console.warn('[App] background embedding failed:', err.message);
+            });
+          });
+        }
       })
       .catch((err) => {
         console.error('[DB] Failed to initialise database', err);

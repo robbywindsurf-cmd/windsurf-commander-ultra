@@ -5,7 +5,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import Papa from 'papaparse';
 import Header from '../components/Header';
 import SharedCard from '../components/SharedCard';
-import { SessionRepository, EquipmentRepository, TrackpointRepository, WeatherRepository, TideRepository } from '@commandersuite/core';
+import { SessionRepository, EquipmentRepository, TrackpointRepository, WeatherRepository, TideRepository, EmbeddingService, TierService, canAccess } from '@commandersuite/core';
 import { WeatherBackfillService } from '../services/WeatherBackfillService';
 
 // Trackpoint CSV files run to hundreds of thousands of rows / tens of MB —
@@ -327,6 +327,31 @@ export default function ImportDataScreen({ navigation }) {
     WeatherBackfillService.countMissing().then(setMissingWeatherCount).catch(() => {});
   }, []);
 
+  const [tier, setTier] = useState('free');
+  const [indexStatus, setIndexStatus] = useState(null); // { indexed, total, lastIndexedAt, available }
+  const [indexing, setIndexing] = useState(false);
+  const [indexProgress, setIndexProgress] = useState({ completed: 0, total: 0 });
+  const [indexError, setIndexError] = useState('');
+
+  useEffect(() => {
+    TierService.getCachedTier().then(setTier);
+    EmbeddingService.getIndexStatus().then(setIndexStatus).catch(() => {});
+  }, []);
+
+  async function runIndexAllSessions() {
+    setIndexing(true);
+    setIndexError('');
+    setIndexProgress({ completed: 0, total: 0 });
+    try {
+      await EmbeddingService.embedAllSessions((completed, total) => setIndexProgress({ completed, total }));
+      setIndexStatus(await EmbeddingService.getIndexStatus());
+    } catch (e) {
+      setIndexError(e.message || 'Indexing failed');
+    } finally {
+      setIndexing(false);
+    }
+  }
+
   async function runWeatherBackfill() {
     setBackfillRunning(true);
     setBackfillError('');
@@ -505,6 +530,58 @@ export default function ImportDataScreen({ navigation }) {
         <Text style={styles.heroTitle}>Import Historical Data</Text>
         <Text style={styles.heroSub}>CSV export from Oracle PostgreSQL</Text>
       </View>
+
+      <Text style={styles.sectionLabel}>🧠 Generate AI Embeddings</Text>
+      {canAccess('FULL_ANALYSIS', tier) ? (
+        <>
+          <SharedCard style={styles.previewCard}>
+            {!indexStatus ? (
+              <Text style={styles.previewName}>Checking index status…</Text>
+            ) : !indexStatus.available ? (
+              <Text style={styles.previewName}>Semantic search isn't available on this build.</Text>
+            ) : (
+              <>
+                <Text style={styles.previewName}>
+                  {indexStatus.indexed} of {indexStatus.total} sessions indexed
+                </Text>
+                {indexStatus.lastIndexedAt && (
+                  <Text style={styles.previewSize}>Last indexed: {indexStatus.lastIndexedAt}</Text>
+                )}
+                <Text style={styles.previewSize}>Improves AI answer quality for Premium users</Text>
+              </>
+            )}
+          </SharedCard>
+
+          {!indexing && indexStatus?.available && indexStatus.indexed < indexStatus.total && (
+            <TouchableOpacity style={styles.importBtn} onPress={runIndexAllSessions}>
+              <Text style={styles.importBtnText}>🧠 Index All Sessions</Text>
+            </TouchableOpacity>
+          )}
+
+          {indexing && (
+            <SharedCard style={styles.progressCard}>
+              <Text style={styles.progressLabel}>Generating embeddings…</Text>
+              <View style={styles.progressTrack}>
+                <View
+                  style={[
+                    styles.progressFill,
+                    { width: `${indexProgress.total ? Math.round((indexProgress.completed / indexProgress.total) * 100) : 0}%` },
+                  ]}
+                />
+              </View>
+              <Text style={styles.progressCount}>
+                {indexProgress.completed} / {indexProgress.total} sessions
+              </Text>
+            </SharedCard>
+          )}
+
+          {!!indexError && <Text style={styles.errorText}>⚠️ {indexError}</Text>}
+        </>
+      ) : (
+        <SharedCard style={styles.previewCard}>
+          <Text style={styles.previewName}>Upgrade to Premium to enable AI-powered semantic search</Text>
+        </SharedCard>
+      )}
 
       <Text style={styles.sectionLabel}>🌦️ Backfill Historical Weather</Text>
       <SharedCard style={styles.previewCard}>
