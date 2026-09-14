@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, Alert } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -6,6 +6,7 @@ import Papa from 'papaparse';
 import Header from '../components/Header';
 import SharedCard from '../components/SharedCard';
 import { SessionRepository, EquipmentRepository, TrackpointRepository, WeatherRepository, TideRepository } from '@commandersuite/core';
+import { WeatherBackfillService } from '../services/WeatherBackfillService';
 
 // Trackpoint CSV files run to hundreds of thousands of rows / tens of MB —
 // never load the whole thing into memory. Read fixed-size byte windows,
@@ -273,7 +274,7 @@ function SimpleCsvImportSection({ title, icon, hint, buttonLabel, onImport }) {
   return (
     <View>
       <Text style={[styles.sectionLabel, { marginTop: 20 }]}>{icon} {title}</Text>
-      <TouchableOpacity
+      <TouchableOpacity activeOpacity={0.7}
         style={[styles.dropZone, file && styles.dropZoneActive]}
         onPress={pick}
         disabled={busy}
@@ -293,7 +294,7 @@ function SimpleCsvImportSection({ title, icon, hint, buttonLabel, onImport }) {
       )}
 
       {file && importedCount == null && (
-        <TouchableOpacity style={[styles.importBtn, busy && styles.importBtnDisabled]} onPress={runImport} disabled={busy}>
+        <TouchableOpacity activeOpacity={0.7} style={[styles.importBtn, busy && styles.importBtnDisabled]} onPress={runImport} disabled={busy}>
           {busy && <ActivityIndicator color="#fff" size="small" style={{ marginRight: 8 }} />}
           <Text style={styles.importBtnText}>{busy ? 'Importing...' : buttonLabel}</Text>
         </TouchableOpacity>
@@ -316,6 +317,34 @@ function SimpleCsvImportSection({ title, icon, hint, buttonLabel, onImport }) {
 }
 
 export default function ImportDataScreen({ navigation }) {
+  const [missingWeatherCount, setMissingWeatherCount] = useState(null);
+  const [backfillRunning, setBackfillRunning] = useState(false);
+  const [backfillProgress, setBackfillProgress] = useState({ completed: 0, total: 0 });
+  const [backfillResult, setBackfillResult] = useState(null);
+  const [backfillError, setBackfillError] = useState('');
+
+  useEffect(() => {
+    WeatherBackfillService.countMissing().then(setMissingWeatherCount).catch(() => {});
+  }, []);
+
+  async function runWeatherBackfill() {
+    setBackfillRunning(true);
+    setBackfillError('');
+    setBackfillResult(null);
+    setBackfillProgress({ completed: 0, total: 0 });
+    try {
+      const result = await WeatherBackfillService.backfillAllSessions((completed, total) =>
+        setBackfillProgress({ completed, total })
+      );
+      setBackfillResult(result);
+      setMissingWeatherCount(await WeatherBackfillService.countMissing());
+    } catch (e) {
+      setBackfillError(e.message || 'Backfill failed');
+    } finally {
+      setBackfillRunning(false);
+    }
+  }
+
   const [file, setFile] = useState(null);
   const [parsing, setParsing] = useState(false);
   const [importing, setImporting] = useState(false);
@@ -468,7 +497,7 @@ export default function ImportDataScreen({ navigation }) {
   const busy = parsing || importing;
 
   return (
-    <ScrollView contentContainerStyle={styles.container} style={styles.scrollBg}>
+    <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" bounces={true} contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.container} style={styles.scrollBg}>
       <Header title="📥 Import Historical Data" />
 
       <View style={styles.hero}>
@@ -477,8 +506,58 @@ export default function ImportDataScreen({ navigation }) {
         <Text style={styles.heroSub}>CSV export from Oracle PostgreSQL</Text>
       </View>
 
+      <Text style={styles.sectionLabel}>🌦️ Backfill Historical Weather</Text>
+      <SharedCard style={styles.previewCard}>
+        {missingWeatherCount == null ? (
+          <Text style={styles.previewName}>Checking weather coverage…</Text>
+        ) : (
+          <Text style={styles.previewName}>
+            {missingWeatherCount} session date{missingWeatherCount === 1 ? '' : 's'} missing weather data
+          </Text>
+        )}
+      </SharedCard>
+
+      {!backfillRunning && !backfillResult && missingWeatherCount > 0 && (
+        <TouchableOpacity activeOpacity={0.7} style={styles.importBtn} onPress={runWeatherBackfill}>
+          <Text style={styles.importBtnText}>🌦️ Backfill Historical Weather</Text>
+        </TouchableOpacity>
+      )}
+
+      {backfillRunning && (
+        <SharedCard style={styles.progressCard}>
+          <Text style={styles.progressLabel}>Fetching from Open-Meteo…</Text>
+          <View style={styles.progressTrack}>
+            <View
+              style={[
+                styles.progressFill,
+                { width: `${backfillProgress.total ? Math.round((backfillProgress.completed / backfillProgress.total) * 100) : 0}%` },
+              ]}
+            />
+          </View>
+          <Text style={styles.progressCount}>
+            {backfillProgress.completed} / {backfillProgress.total} sessions
+          </Text>
+        </SharedCard>
+      )}
+
+      {!!backfillError && <Text style={styles.errorText}>⚠️ {backfillError}</Text>}
+
+      {backfillResult && (
+        <SharedCard style={styles.resultCard}>
+          <View style={styles.resultCenter}>
+            <Text style={styles.resultIcon}>{backfillResult.success ? '✅' : '⚠️'}</Text>
+            <Text style={[styles.resultTitle, { color: backfillResult.success ? SAFE : ACCENT }]}>
+              {backfillResult.count} date{backfillResult.count === 1 ? '' : 's'} backfilled
+            </Text>
+            {backfillResult.errors.length > 0 && (
+              <Text style={styles.resultSub}>{backfillResult.errors.length} error(s) — check network and retry</Text>
+            )}
+          </View>
+        </SharedCard>
+      )}
+
       <Text style={styles.sectionLabel}>📁 Select CSV File</Text>
-      <TouchableOpacity
+      <TouchableOpacity activeOpacity={0.7}
         style={[styles.dropZone, file && styles.dropZoneActive]}
         onPress={pickFile}
         disabled={busy}
@@ -498,7 +577,7 @@ export default function ImportDataScreen({ navigation }) {
       )}
 
       {file && !done && (
-        <TouchableOpacity style={[styles.importBtn, busy && styles.importBtnDisabled]} onPress={startImport} disabled={busy}>
+        <TouchableOpacity activeOpacity={0.7} style={[styles.importBtn, busy && styles.importBtnDisabled]} onPress={startImport} disabled={busy}>
           {busy && <ActivityIndicator color="#fff" size="small" style={{ marginRight: 8 }} />}
           <Text style={styles.importBtnText}>
             {parsing ? 'Parsing CSV...' : importing ? 'Importing...' : '📥 Import Sessions'}
@@ -531,7 +610,7 @@ export default function ImportDataScreen({ navigation }) {
               {importedCount} imported, {skippedCount} skipped (duplicates)
             </Text>
 
-            <TouchableOpacity
+            <TouchableOpacity activeOpacity={0.7}
               style={styles.viewSessionsBtn}
               onPress={() => navigation.navigate('MainTabs', { screen: 'Sessions' })}
             >
@@ -542,7 +621,7 @@ export default function ImportDataScreen({ navigation }) {
       )}
 
       <Text style={[styles.sectionLabel, { marginTop: 20 }]}>📍 GPS Trackpoints</Text>
-      <TouchableOpacity
+      <TouchableOpacity activeOpacity={0.7}
         style={[styles.dropZone, tpFile && styles.dropZoneActive]}
         onPress={pickTrackpointsFile}
         disabled={tpImporting}
@@ -564,7 +643,7 @@ export default function ImportDataScreen({ navigation }) {
       )}
 
       {tpFile && !tpDone && (
-        <TouchableOpacity
+        <TouchableOpacity activeOpacity={0.7}
           style={[styles.importBtn, tpImporting && styles.importBtnDisabled]}
           onPress={confirmStartTrackpointsImport}
           disabled={tpImporting}

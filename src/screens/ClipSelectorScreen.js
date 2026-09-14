@@ -239,25 +239,25 @@ export default function ClipSelectorScreen({ route, navigation }) {
               Frame {reviewIndex + 1} / {annotatedFrames.length}
             </Text>
             <View style={styles.reviewBtnRow}>
-              <TouchableOpacity
+              <TouchableOpacity activeOpacity={0.7}
                 style={styles.reviewBtn}
                 onPress={() => setReviewIndex(Math.max(0, reviewIndex - 1))}
               >
                 <Text style={styles.reviewBtnText}>◀ Prev</Text>
               </TouchableOpacity>
-              <TouchableOpacity
+              <TouchableOpacity activeOpacity={0.7}
                 style={styles.reviewBtn}
                 onPress={() => setReviewIndex(Math.min(annotatedFrames.length - 1, reviewIndex + 1))}
               >
                 <Text style={styles.reviewBtnText}>Next ▶</Text>
               </TouchableOpacity>
-              <TouchableOpacity
+              <TouchableOpacity activeOpacity={0.7}
                 style={[styles.reviewBtn, { backgroundColor: SKY }]}
                 onPress={goToSessionDetail}
               >
                 <Text style={styles.reviewBtnText}>📋 Session</Text>
               </TouchableOpacity>
-              <TouchableOpacity
+              <TouchableOpacity activeOpacity={0.7}
                 style={[styles.reviewBtn, { backgroundColor: DANGER }]}
                 onPress={() => { setMode('ready'); setAnnotatedFrames([]); setCurrentFrame(null); }}
               >
@@ -279,15 +279,15 @@ export default function ClipSelectorScreen({ route, navigation }) {
             <Text style={styles.upgradeBannerText}>
               🔒 Upgrade to Premium to see skeleton overlay, frame review and full coaching report
             </Text>
-            <TouchableOpacity style={styles.upgradeBannerBtn} onPress={goToUpgrade}>
+            <TouchableOpacity activeOpacity={0.7} style={styles.upgradeBannerBtn} onPress={goToUpgrade}>
               <Text style={styles.upgradeBannerBtnText}>Upgrade</Text>
             </TouchableOpacity>
           </View>
           <View style={styles.reviewBtnRow}>
-            <TouchableOpacity style={[styles.reviewBtn, { backgroundColor: SKY }]} onPress={goToSessionDetail}>
+            <TouchableOpacity activeOpacity={0.7} style={[styles.reviewBtn, { backgroundColor: SKY }]} onPress={goToSessionDetail}>
               <Text style={styles.reviewBtnText}>📋 Session</Text>
             </TouchableOpacity>
-            <TouchableOpacity
+            <TouchableOpacity activeOpacity={0.7}
               style={[styles.reviewBtn, { backgroundColor: DANGER }]}
               onPress={() => { setMode('ready'); setSummary(null); }}
             >
@@ -385,7 +385,7 @@ export default function ClipSelectorScreen({ route, navigation }) {
 
             {!analysing && mode !== 'locateRider' && (
               <>
-                <TouchableOpacity
+                <TouchableOpacity activeOpacity={0.7}
                   style={styles.playBtn}
                   onPress={() => {
                     if (isPlaying) player.pause();
@@ -394,30 +394,30 @@ export default function ClipSelectorScreen({ route, navigation }) {
                 >
                   <Text style={styles.playBtnText}>{isPlaying ? '⏸' : '▶'}</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.skipBtn} onPress={() => seekTo(Math.max(0, position - 10000))}>
+                <TouchableOpacity activeOpacity={0.7} style={styles.skipBtn} onPress={() => seekTo(Math.max(0, position - 10000))}>
                   <Text style={styles.skipBtnText}>-10s</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.skipBtn} onPress={() => seekTo(Math.min(duration, position + 10000))}>
+                <TouchableOpacity activeOpacity={0.7} style={styles.skipBtn} onPress={() => seekTo(Math.min(duration, position + 10000))}>
                   <Text style={styles.skipBtnText}>+10s</Text>
                 </TouchableOpacity>
               </>
             )}
 
             {mode === 'scrub' && (
-              <TouchableOpacity style={styles.setStartBtn} onPress={onSetStart}>
+              <TouchableOpacity activeOpacity={0.7} style={styles.setStartBtn} onPress={onSetStart}>
                 <Text style={styles.setStartBtnText}>📍 Set Start</Text>
               </TouchableOpacity>
             )}
 
             {mode === 'ready' && (
               <>
-                <TouchableOpacity
+                <TouchableOpacity activeOpacity={0.7}
                   style={styles.retapBtn}
                   onPress={() => { setMode('locateRider'); setRiderTapPos(null); setRiderAngles(null); }}
                 >
                   <Text style={styles.retapBtnText}>👆 Re-tap</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.analyseBtn} onPress={runAnalysis}>
+                <TouchableOpacity activeOpacity={0.7} style={styles.analyseBtn} onPress={runAnalysis}>
                   <Text style={styles.analyseBtnText}>🏄 Analyse</Text>
                 </TouchableOpacity>
               </>
@@ -432,14 +432,14 @@ export default function ClipSelectorScreen({ route, navigation }) {
                       : analysisStatus || 'Starting…'}
                   </Text>
                 </View>
-                <TouchableOpacity style={styles.cancelBtn} onPress={cancelAnalysis}>
+                <TouchableOpacity activeOpacity={0.7} style={styles.cancelBtn} onPress={cancelAnalysis}>
                   <Text style={styles.cancelBtnText}>⏹ Cancel</Text>
                 </TouchableOpacity>
               </>
             )}
 
             {!analysing && (
-              <TouchableOpacity style={styles.exitBtn} onPress={exitClipSelector}>
+              <TouchableOpacity activeOpacity={0.7} style={styles.exitBtn} onPress={exitClipSelector}>
                 <Text style={styles.cancelBtnText}>✕</Text>
               </TouchableOpacity>
             )}

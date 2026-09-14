@@ -5,9 +5,11 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#061f2e",
     "ios": {
       "supportsTablet": true,
+      "backgroundColor": "#061f2e",
       "usesAppleSignIn": false,
       "bundleIdentifier": "com.anonymous.windsurf-commander-ultra",
       "infoPlist": {

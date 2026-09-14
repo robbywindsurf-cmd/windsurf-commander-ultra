@@ -4,8 +4,11 @@ import { StatusBar } from 'expo-status-bar';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import { getDb } from '@commandersuite/core';
+import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { getDb, UserStore } from '@commandersuite/core';
 import { seedEquipment } from './src/utils/seedEquipment';
+import { seedBeaches } from './src/utils/seedBeaches';
+import FavouriteBeachPicker from './src/components/FavouriteBeachPicker';
 
 import HomeScreen from './src/screens/HomeScreen';
 import WeatherScreen from './src/screens/WeatherScreen';
@@ -18,6 +21,7 @@ import UpgradeScreen from './src/screens/UpgradeScreen';
 import SessionDetailScreen from './src/screens/SessionDetailScreen';
 import ImportDataScreen from './src/screens/ImportDataScreen';
 import PeakMomentScreen from './src/screens/PeakMomentScreen';
+import StatsScreen from './src/screens/StatsScreen';
 import { colors } from './src/theme';
 
 const Tab = createBottomTabNavigator();
@@ -37,18 +41,26 @@ function TabIcon({ routeName, focused }) {
   return (
     <View style={[tabStyles.pill, focused && tabStyles.pillActive]}>
       <Text style={tabStyles.emoji}>{meta.icon}</Text>
-      <Text style={[tabStyles.label, focused && tabStyles.labelActive]}>{meta.label}</Text>
+      <Text
+        style={[tabStyles.label, focused && tabStyles.labelActive]}
+        numberOfLines={1}
+        adjustsFontSizeToFit
+        minimumFontScale={0.7}
+      >
+        {meta.label}
+      </Text>
     </View>
   );
 }
 
 function MainTabs() {
+  const insets = useSafeAreaInsets();
   return (
     <Tab.Navigator
       screenOptions={({ route }) => ({
         headerShown: false,
         tabBarShowLabel: false,
-        tabBarStyle: tabStyles.bar,
+        tabBarStyle: [tabStyles.bar, { paddingBottom: insets.bottom || 8 }],
         tabBarItemStyle: tabStyles.item,
         tabBarIcon: ({ focused }) => <TabIcon routeName={route.name} focused={focused} />,
       })}
@@ -73,8 +85,8 @@ const tabStyles = StyleSheet.create({
   item: { paddingVertical: 2 },
   pill: {
     alignItems: 'center', justifyContent: 'center',
-    paddingVertical: 6, paddingHorizontal: 10,
-    borderRadius: 9, minWidth: 54,
+    paddingVertical: 6, paddingHorizontal: 4,
+    borderRadius: 9, width: '100%',
   },
   pillActive: {
     backgroundColor: colors.accent,
@@ -83,18 +95,21 @@ const tabStyles = StyleSheet.create({
     elevation: 4,
   },
   emoji: { fontSize: 15, marginBottom: 2 },
-  label: { fontSize: 9, fontWeight: '600', letterSpacing: 0.3, color: 'rgba(205,232,240,0.45)' },
+  label: { fontSize: 9, fontWeight: '600', letterSpacing: 0.3, color: 'rgba(205,232,240,0.45)', textAlign: 'center', width: '100%' },
   labelActive: { color: '#ffffff' },
 });
 
 export default function App() {
   const [dbReady, setDbReady] = useState(false);
+  const [favouriteBeach, setFavouriteBeach] = useState(null); // undefined until checked, null if unset
 
   useEffect(() => {
     getDb()
       .then(async () => {
         console.log('[DB] Database initialised');
-        await seedEquipment();
+        await Promise.all([seedEquipment(), seedBeaches()]);
+        const favourite = await UserStore.getFavouriteBeach();
+        setFavouriteBeach(favourite);
         setDbReady(true);
       })
       .catch((err) => {
@@ -104,29 +119,45 @@ export default function App() {
 
   if (!dbReady) {
     return (
-      <View style={styles.loading}>
-        <Text style={{ color: colors.text }}>Loading…</Text>
-        <StatusBar style="light" />
-      </View>
+      <SafeAreaProvider>
+        <View style={styles.loading}>
+          <Text style={{ color: colors.text }}>Loading…</Text>
+          <StatusBar style="light" />
+        </View>
+      </SafeAreaProvider>
+    );
+  }
+
+  if (!favouriteBeach) {
+    return (
+      <SafeAreaProvider>
+        <View style={styles.loading}>
+          <StatusBar style="light" />
+        </View>
+        <FavouriteBeachPicker visible onSelected={setFavouriteBeach} />
+      </SafeAreaProvider>
     );
   }
 
   return (
-    <NavigationContainer>
-      <Stack.Navigator screenOptions={{ headerShown: false }}>
-        <Stack.Screen name="MainTabs" component={MainTabs} />
-        <Stack.Screen
-          name="ClipSelector"
-          component={ClipSelectorScreen}
-          options={{ gestureEnabled: false, animation: 'slide_from_bottom' }}
-        />
-        <Stack.Screen name="Upgrade" component={UpgradeScreen} options={{ presentation: 'modal' }} />
-        <Stack.Screen name="SessionDetail" component={SessionDetailScreen} />
-        <Stack.Screen name="ImportData" component={ImportDataScreen} />
-        <Stack.Screen name="PeakMoment" component={PeakMomentScreen} />
-      </Stack.Navigator>
-      <StatusBar style="light" />
-    </NavigationContainer>
+    <SafeAreaProvider>
+      <NavigationContainer>
+        <Stack.Navigator screenOptions={{ headerShown: false }}>
+          <Stack.Screen name="MainTabs" component={MainTabs} />
+          <Stack.Screen
+            name="ClipSelector"
+            component={ClipSelectorScreen}
+            options={{ gestureEnabled: false, animation: 'slide_from_bottom' }}
+          />
+          <Stack.Screen name="Upgrade" component={UpgradeScreen} options={{ presentation: 'modal' }} />
+          <Stack.Screen name="SessionDetail" component={SessionDetailScreen} />
+          <Stack.Screen name="ImportData" component={ImportDataScreen} />
+          <Stack.Screen name="PeakMoment" component={PeakMomentScreen} />
+          <Stack.Screen name="Stats" component={StatsScreen} />
+        </Stack.Navigator>
+        <StatusBar style="light" />
+      </NavigationContainer>
+    </SafeAreaProvider>
   );
 }
 

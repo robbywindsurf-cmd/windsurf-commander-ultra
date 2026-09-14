@@ -109,7 +109,7 @@ export default function UpgradeScreen({ route, navigation }) {
   }
 
   return (
-    <ScrollView style={styles.scrollBg} contentContainerStyle={styles.container}>
+    <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" bounces={true} contentInsetAdjustmentBehavior="automatic" style={styles.scrollBg} contentContainerStyle={styles.container}>
       <Text style={styles.title}>Unlock Windsurf Commander Ultra</Text>
       <Text style={styles.subtitle}>Get the most from every session</Text>
 
@@ -135,7 +135,7 @@ export default function UpgradeScreen({ route, navigation }) {
           <Text key={f} style={styles.feature}>✅ {f}</Text>
         ))}
 
-        <TouchableOpacity
+        <TouchableOpacity activeOpacity={0.7}
           style={[styles.ctaBtn, styles.ctaBtnPremium]}
           onPress={() => purchase('premium', 'monthly')}
           disabled={purchasingKey === 'premium_monthly'}
@@ -146,14 +146,14 @@ export default function UpgradeScreen({ route, navigation }) {
         </TouchableOpacity>
 
         <View style={styles.yearlyRow}>
-          <TouchableOpacity
+          <TouchableOpacity activeOpacity={0.7}
             style={[styles.ctaBtnSecondary, styles.ctaBtnSecondaryPremium]}
             onPress={() => purchase('premium', 'monthly')}
             disabled={purchasingKey === 'premium_monthly'}
           >
             <Text style={styles.ctaBtnSecondaryText}>£4.99/month</Text>
           </TouchableOpacity>
-          <TouchableOpacity
+          <TouchableOpacity activeOpacity={0.7}
             style={[styles.ctaBtnSecondary, styles.ctaBtnSecondaryPremium]}
             onPress={() => purchase('premium', 'yearly')}
             disabled={purchasingKey === 'premium_yearly'}
@@ -178,7 +178,7 @@ export default function UpgradeScreen({ route, navigation }) {
         ))}
 
         <View style={styles.yearlyRow}>
-          <TouchableOpacity
+          <TouchableOpacity activeOpacity={0.7}
             style={[styles.ctaBtnSecondary, styles.ctaBtnSecondaryUltimate]}
             onPress={() => purchase('ultimate', 'monthly')}
             disabled={purchasingKey === 'ultimate_monthly'}
@@ -187,7 +187,7 @@ export default function UpgradeScreen({ route, navigation }) {
               ? <ActivityIndicator color={colors.amber} size="small" />
               : <Text style={[styles.ctaBtnSecondaryText, { color: colors.amber }]}>£9.99/month</Text>}
           </TouchableOpacity>
-          <TouchableOpacity
+          <TouchableOpacity activeOpacity={0.7}
             style={[styles.ctaBtnSecondary, styles.ctaBtnSecondaryUltimate]}
             onPress={() => purchase('ultimate', 'yearly')}
             disabled={purchasingKey === 'ultimate_yearly'}
@@ -205,24 +205,24 @@ export default function UpgradeScreen({ route, navigation }) {
       <Text style={styles.reassurance}>Cancel anytime — no long-term commitment.</Text>
 
       <View style={styles.footerLinks}>
-        <TouchableOpacity onPress={restore} disabled={restoring}>
+        <TouchableOpacity activeOpacity={0.7} onPress={restore} disabled={restoring}>
           <Text style={styles.footerLink}>{restoring ? 'Restoring…' : 'Restore Purchase'}</Text>
         </TouchableOpacity>
-        <TouchableOpacity onPress={() => showComingSoon('Terms of Service')}>
+        <TouchableOpacity activeOpacity={0.7} onPress={() => showComingSoon('Terms of Service')}>
           <Text style={styles.footerLink}>Terms of Service</Text>
         </TouchableOpacity>
-        <TouchableOpacity onPress={() => showComingSoon('Privacy Policy')}>
+        <TouchableOpacity activeOpacity={0.7} onPress={() => showComingSoon('Privacy Policy')}>
           <Text style={styles.footerLink}>Privacy Policy</Text>
         </TouchableOpacity>
       </View>
 
-      <TouchableOpacity style={styles.closeBtn} onPress={() => navigation.goBack()}>
+      <TouchableOpacity activeOpacity={0.7} style={styles.closeBtn} onPress={() => navigation.goBack()}>
         <Text style={styles.closeBtnText}>Maybe later</Text>
       </TouchableOpacity>
 
       {/* Dev-only: no downgrade flow exists yet (RevenueCat isn't configured),
           so this is the only way to test free-tier behaviour again. */}
-      <TouchableOpacity style={styles.devResetBtn} onPress={() => purchase('free', null)}>
+      <TouchableOpacity activeOpacity={0.7} style={styles.devResetBtn} onPress={() => purchase('free', null)}>
         <Text style={styles.devResetBtnText}>Reset to Free (dev)</Text>
       </TouchableOpacity>
     </ScrollView>

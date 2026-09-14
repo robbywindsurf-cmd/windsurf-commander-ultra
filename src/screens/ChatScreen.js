@@ -19,10 +19,16 @@ import Header from '../components/Header';
 import { colors } from '../theme';
 
 const SUGGESTED_QUESTIONS = [
-  { emoji: '📅', label: 'How was my last session?', question: 'How was my last session?' },
-  { emoji: '⚙️', label: 'What gear should I use today?', question: 'What gear should I use today?' },
-  { emoji: '🏄', label: 'How can I improve my technique?', question: 'How can I improve my technique?' },
-  { emoji: '🏆', label: 'What was my best speed this year?', question: 'What was my best speed this year?' },
+  { emoji: '🏆', label: 'What is my real personal best?', question: 'What is my real personal best?' },
+  { emoji: '🪂', label: 'Best sail for speed?', question: 'Best sail for speed?' },
+  { emoji: '💨', label: 'Best wind direction?', question: 'Best wind direction?' },
+  { emoji: '📈', label: 'Year on year progress?', question: 'Year on year progress?' },
+  { emoji: '🚀', label: 'How to break 30 knots?', question: 'How to break 30 knots?' },
+  { emoji: '❤️', label: 'Most intense sessions?', question: 'Most intense sessions?' },
+  { emoji: '❤️', label: 'HR vs speed analysis?', question: 'HR vs speed analysis?' },
+  { emoji: '🌊', label: 'Best conditions for my fastest sessions?', question: 'Best conditions for my fastest sessions?' },
+  { emoji: '⚙️', label: 'Which gear combo performs best?', question: 'Which gear combo performs best?' },
+  { emoji: '📅', label: 'How many sessions this year vs last year?', question: 'How many sessions this year vs last year?' },
 ];
 
 function makeId() {
@@ -48,7 +54,7 @@ function ChatUpgradePrompt({ navigation }) {
         <Text style={styles.upgradeIcon}>🔒</Text>
         <Text style={styles.upgradeTitle}>Chat with your AI coach is a Premium feature</Text>
         <Text style={styles.upgradeSub}>Upgrade to ask questions about your sessions</Text>
-        <TouchableOpacity style={styles.upgradeBtn} onPress={() => navigation.navigate('Upgrade')}>
+        <TouchableOpacity activeOpacity={0.7} style={styles.upgradeBtn} onPress={() => navigation.navigate('Upgrade')}>
           <Text style={styles.upgradeBtnText}>Upgrade</Text>
         </TouchableOpacity>
       </View>
@@ -56,7 +62,7 @@ function ChatUpgradePrompt({ navigation }) {
   );
 }
 
-export default function ChatScreen({ navigation }) {
+export default function ChatScreen({ navigation, route }) {
   const [tier, setTier] = useState(null); // null = still resolving
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
@@ -70,6 +76,15 @@ export default function ChatScreen({ navigation }) {
     TierService.getCachedTier().then(setTier);
     ModelManager.isModelDownloaded().then(setModelDownloaded);
   }, []));
+
+  useEffect(() => {
+    const initial = route?.params?.initialQuestion;
+    if (initial) {
+      send(initial);
+      navigation.setParams({ initialQuestion: undefined });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [route?.params?.initialQuestion]);
 
   const handleDownloadModel = async () => {
     setDownloading(true);
@@ -141,7 +156,7 @@ export default function ChatScreen({ navigation }) {
       <Text style={styles.welcomeSub}>Ask about your sessions, gear or technique</Text>
       <View style={styles.suggestedList}>
         {SUGGESTED_QUESTIONS.map((q) => (
-          <TouchableOpacity key={q.question} style={styles.suggestedBtn} onPress={() => send(q.question)}>
+          <TouchableOpacity activeOpacity={0.7} key={q.question} style={styles.suggestedBtn} onPress={() => send(q.question)}>
             <Text style={styles.suggestedText}>{q.emoji} {q.label}</Text>
           </TouchableOpacity>
         ))}
@@ -189,13 +204,13 @@ export default function ChatScreen({ navigation }) {
             </View>
           </View>
         ) : (
-          <TouchableOpacity style={styles.downloadBtn} onPress={handleDownloadModel} accessibilityLabel="Download AI Model">
+          <TouchableOpacity activeOpacity={0.7} style={styles.downloadBtn} onPress={handleDownloadModel} accessibilityLabel="Download AI Model">
             <Text style={styles.downloadBtnText}>⬇️ Download AI Model</Text>
             <Text style={styles.downloadBtnSub}>Requires 2.3GB storage</Text>
           </TouchableOpacity>
         )}
       </View>
-      <FlatList
+      <FlatList showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled"
         ref={listRef}
         data={messages}
         keyExtractor={(i) => i.id}
@@ -216,7 +231,7 @@ export default function ChatScreen({ navigation }) {
           returnKeyType="send"
           editable={!sending}
         />
-        <TouchableOpacity style={[styles.sendBtn, sending && styles.sendBtnDisabled]} onPress={() => send()} disabled={sending}>
+        <TouchableOpacity activeOpacity={0.7} style={[styles.sendBtn, sending && styles.sendBtnDisabled]} onPress={() => send()} disabled={sending}>
           <Text style={styles.sendIcon}>➤</Text>
         </TouchableOpacity>
       </View>

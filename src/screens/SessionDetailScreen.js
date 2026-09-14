@@ -1,7 +1,7 @@
 import React, { useCallback, useState } from 'react';
 import { ScrollView, Text, View, StyleSheet, TouchableOpacity } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
-import { SessionRepository, AnalysisRepository, TrackpointRepository, TideRepository, FeatureGate } from '@commandersuite/core';
+import { SessionRepository, AnalysisRepository, TrackpointRepository, TideRepository, WeatherRepository, UserStore, FeatureGate } from '@commandersuite/core';
 import Header from '../components/Header';
 import SharedCard from '../components/SharedCard';
 import SessionRouteMap from '../components/SessionRouteMap';
@@ -15,6 +15,7 @@ export default function SessionDetailScreen({ route, navigation }) {
   const [trackpoints, setTrackpoints] = useState([]);
   const [tidePredictions, setTidePredictions] = useState([]);
   const [tideStateAtStart, setTideStateAtStart] = useState(null);
+  const [weather, setWeather] = useState(null);
 
   useFocusEffect(
     useCallback(() => {
@@ -31,11 +32,17 @@ export default function SessionDetailScreen({ route, navigation }) {
 
           if (s?.date) {
             const startTimestamp = s.start_time ? `${s.date}T${s.start_time}` : s.date;
-            const [predictions, tideState] = await Promise.all([
+            const favouriteBeach = await UserStore.getFavouriteBeach();
+            const [predictions, tideState, weatherRow] = await Promise.all([
               TideRepository.getPredictionsForDate(s.date),
               TideRepository.getTideStateAtTime(startTimestamp),
+              favouriteBeach ? WeatherRepository.getForBeach(favouriteBeach.name, s.date) : null,
             ]);
-            if (!cancelled) { setTidePredictions(predictions); setTideStateAtStart(tideState); }
+            if (!cancelled) {
+              setTidePredictions(predictions);
+              setTideStateAtStart(tideState);
+              setWeather(weatherRow);
+            }
           }
         } catch (err) {
           console.warn('[SessionDetail] load error:', err.message);
@@ -55,12 +62,12 @@ export default function SessionDetailScreen({ route, navigation }) {
   }
 
   return (
-    <ScrollView style={styles.scrollBg} contentContainerStyle={styles.container}>
+    <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" bounces={true} contentInsetAdjustmentBehavior="automatic" style={styles.scrollBg} contentContainerStyle={styles.container}>
       <Header badge={session.date} title="📅 Session Detail" />
 
       <SessionRouteMap trackpoints={trackpoints} height={340} />
 
-      <TouchableOpacity
+      <TouchableOpacity activeOpacity={0.7}
         style={styles.peakMomentBtn}
         onPress={() => navigation.navigate('PeakMoment', { sessionId })}
         accessibilityLabel="Create Peak Moment"
@@ -73,6 +80,27 @@ export default function SessionDetailScreen({ route, navigation }) {
         <Text style={styles.row}>Avg speed: {session.avg_speed_kn ? `${session.avg_speed_kn.toFixed(1)} kn` : '—'}</Text>
         <Text style={styles.row}>Distance: {session.distance_m ? `${(session.distance_m / 1000).toFixed(1)} km` : '—'}</Text>
         <Text style={styles.row}>Duration: {session.duration_s ? `${Math.round(session.duration_s / 60)} min` : '—'}</Text>
+      </SharedCard>
+
+      <Text style={styles.sectionLabel}>Weather</Text>
+      <SharedCard>
+        {weather ? (
+          <>
+            <Text style={styles.row}>📍 {weather.beach_name}</Text>
+            <Text style={styles.row}>
+              💨 {weather.best_wind_kn != null ? `${Math.round(weather.best_wind_kn)}kn` : '—'}
+              {weather.best_wind_dir != null ? ` ${weather.best_wind_dir}°` : ''}
+            </Text>
+            <Text style={styles.row}>🌊 {weather.wave_height_m != null ? `${weather.wave_height_m}m swell` : '—'}</Text>
+            <Text style={styles.row}>🌡️ {weather.temperature_c != null ? `${Math.round(weather.temperature_c)}°C` : '—'}</Text>
+          </>
+        ) : (
+          <TouchableOpacity activeOpacity={0.7} onPress={() => navigation.navigate('ImportData')}>
+            <Text style={styles.emptyText}>
+              No weather data for this date — run "Backfill Historical Weather" from Import Data
+            </Text>
+          </TouchableOpacity>
+        )}
       </SharedCard>
 
       <Text style={styles.sectionLabel}>Tide</Text>

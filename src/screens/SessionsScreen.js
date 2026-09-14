@@ -83,14 +83,14 @@ export default function SessionsScreen({ navigation }) {
   }
 
   return (
-    <ScrollView style={styles.scrollBg} contentContainerStyle={styles.container}>
+    <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" bounces={true} contentInsetAdjustmentBehavior="automatic" style={styles.scrollBg} contentContainerStyle={styles.container}>
       <Header badge={`${sessions.length} sessions`} title="📅 Sessions" />
 
-      <TouchableOpacity style={styles.importBtn} onPress={handleImportFit}>
+      <TouchableOpacity activeOpacity={0.7} style={styles.importBtn} onPress={handleImportFit}>
         <Text style={styles.importBtnText}>📥 Import FIT File</Text>
       </TouchableOpacity>
 
-      <TouchableOpacity
+      <TouchableOpacity activeOpacity={0.7}
         style={styles.importHistoricalBtn}
         onPress={() => navigation.navigate('ImportData')}
         accessibilityLabel="Import historical data"
@@ -134,7 +134,7 @@ export default function SessionsScreen({ navigation }) {
           const showMap = i < MAP_PREVIEW_COUNT;
 
           return (
-            <TouchableOpacity key={s.session_id} onPress={goToDetail}>
+            <TouchableOpacity activeOpacity={0.7} key={s.session_id} onPress={goToDetail}>
               <SharedCard>
                 <Text style={styles.title}>{s.date} {s.start_time ? `· ${s.start_time}` : ''}</Text>
                 <Text style={styles.meta}>{stats}</Text>
@@ -151,7 +151,7 @@ export default function SessionsScreen({ navigation }) {
         })
       )}
 
-      <Modal visible={!!gearPromptSessionId} animationType="slide" transparent onRequestClose={() => setGearPromptSessionId(null)}>
+      <Modal statusBarTranslucent visible={!!gearPromptSessionId} animationType="slide" transparent onRequestClose={() => setGearPromptSessionId(null)}>
         <View style={styles.modalOverlay}>
           <View style={styles.gearPromptBox}>
             <Text style={styles.modalTitle}>Which gear did you use?</Text>
@@ -159,7 +159,7 @@ export default function SessionsScreen({ navigation }) {
               <Text style={styles.resultText}>No gear combos yet — add one in the Garage tab.</Text>
             ) : (
               Object.values(gearCombos).map((c) => (
-                <TouchableOpacity key={c.id} style={styles.gearOption} onPress={() => assignGear(c.id)}>
+                <TouchableOpacity activeOpacity={0.7} key={c.id} style={styles.gearOption} onPress={() => assignGear(c.id)}>
                   <Text style={styles.gearOptionName}>{c.name}</Text>
                   <Text style={styles.gearOptionMeta}>
                     {[c.board_name, c.sail_name].filter(Boolean).join(' + ')}
@@ -167,7 +167,7 @@ export default function SessionsScreen({ navigation }) {
                 </TouchableOpacity>
               ))
             )}
-            <TouchableOpacity style={styles.skipBtn} onPress={() => setGearPromptSessionId(null)}>
+            <TouchableOpacity activeOpacity={0.7} style={styles.skipBtn} onPress={() => setGearPromptSessionId(null)}>
               <Text style={styles.skipBtnText}>Skip</Text>
             </TouchableOpacity>
           </View>

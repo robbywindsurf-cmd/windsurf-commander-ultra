@@ -8,6 +8,7 @@ import {
 } from '@commandersuite/core';
 import SharedCard from '../components/SharedCard';
 import SessionMapPreview from '../components/SessionMapPreview';
+import FavouriteBeachPicker from '../components/FavouriteBeachPicker';
 import { colors } from '../theme';
 
 function formatDuration(seconds) {
@@ -50,21 +51,25 @@ export default function HomeScreen({ navigation }) {
   const [latestAnalysis, setLatestAnalysis] = useState(null);
   const [bests, setBests] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [favouriteBeach, setFavouriteBeach] = useState(null);
+  const [beachPickerVisible, setBeachPickerVisible] = useState(false);
 
   const load = useCallback(async () => {
     try {
-      const [user, cachedTier, weatherRows, recent, analysis, personalBests] = await Promise.all([
+      const [user, cachedTier, weatherRows, recent, analysis, personalBests, favourite] = await Promise.all([
         UserStore.getUser(),
         TierService.getCachedTier(),
         WeatherRepository.getAllToday(),
         SessionRepository.getRecentSessions(1),
         AnalysisRepository.getLatestAnalysis(),
         SessionRepository.getPersonalBests(),
+        UserStore.getFavouriteBeach(),
       ]);
 
       setNickname(user?.nickname || 'Rob');
       setTier(cachedTier);
       setWeather(weatherRows?.[0] || null);
+      setFavouriteBeach(favourite);
       setBests(personalBests);
       setLatestAnalysis(analysis || null);
 
@@ -93,7 +98,7 @@ export default function HomeScreen({ navigation }) {
 
   return (
     <SafeAreaView style={styles.scrollBg} edges={['top']}>
-    <ScrollView
+    <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" bounces={true} contentInsetAdjustmentBehavior="automatic"
       style={styles.scrollBg}
       contentContainerStyle={styles.container}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} />}
@@ -104,10 +109,17 @@ export default function HomeScreen({ navigation }) {
           <Text style={styles.greeting}>{greeting()} {nickname}</Text>
           <Text style={styles.dateText}>{todayLabel()}</Text>
         </View>
-        <TouchableOpacity style={styles.tierBadge} onPress={() => navigation.navigate('Upgrade')}>
+        <TouchableOpacity activeOpacity={0.7} style={styles.tierBadge} onPress={() => navigation.navigate('Upgrade')}>
           <Text style={styles.tierBadgeText}>{tier.toUpperCase()}</Text>
         </TouchableOpacity>
       </View>
+
+      <TouchableOpacity activeOpacity={0.7} style={styles.beachRow} onPress={() => setBeachPickerVisible(true)}>
+        <Text style={styles.beachRowText}>
+          Your beach: {favouriteBeach ? `⭐ ${favouriteBeach.name}` : 'Not set'}
+        </Text>
+        <Text style={styles.beachRowChange}>Change</Text>
+      </TouchableOpacity>
 
       {/* Today's conditions */}
       <SharedCard>
@@ -125,7 +137,7 @@ export default function HomeScreen({ navigation }) {
         ) : (
           <Text style={styles.emptyText}>No forecast cached yet.</Text>
         )}
-        <TouchableOpacity onPress={() => navigation.navigate('Weather')}>
+        <TouchableOpacity activeOpacity={0.7} onPress={() => navigation.navigate('Weather')}>
           <Text style={styles.linkText}>View full forecast →</Text>
         </TouchableOpacity>
       </SharedCard>
@@ -151,7 +163,7 @@ export default function HomeScreen({ navigation }) {
         ) : (
           <Text style={styles.emptyText}>No sessions yet.</Text>
         )}
-        <TouchableOpacity onPress={() => navigation.navigate('Sessions')}>
+        <TouchableOpacity activeOpacity={0.7} onPress={() => navigation.navigate('Sessions')}>
           <Text style={styles.linkText}>View all sessions →</Text>
         </TouchableOpacity>
       </SharedCard>
@@ -173,7 +185,7 @@ export default function HomeScreen({ navigation }) {
                 <Text style={styles.teaserOverlayBody}>
                   Upgrade to Premium to unlock skeleton overlay, coaching reports and frame review
                 </Text>
-                <TouchableOpacity style={styles.teaserBtn} onPress={() => navigation.navigate('Upgrade')}>
+                <TouchableOpacity activeOpacity={0.7} style={styles.teaserBtn} onPress={() => navigation.navigate('Upgrade')}>
                   <Text style={styles.teaserBtnText}>Upgrade</Text>
                 </TouchableOpacity>
               </View>
@@ -183,7 +195,7 @@ export default function HomeScreen({ navigation }) {
           <View style={styles.teaserEmpty}>
             <Text style={styles.teaserEmptyIcon}>🎥</Text>
             <Text style={styles.teaserEmptyText}>Import a GoPro video to analyse your technique</Text>
-            <TouchableOpacity style={styles.teaserBtn} onPress={() => navigation.navigate('Video')}>
+            <TouchableOpacity activeOpacity={0.7} style={styles.teaserBtn} onPress={() => navigation.navigate('Video')}>
               <Text style={styles.teaserBtnText}>Import Video</Text>
             </TouchableOpacity>
           </View>
@@ -210,23 +222,26 @@ export default function HomeScreen({ navigation }) {
             <Text style={styles.bestsLabel}>total time</Text>
           </View>
         </View>
+        <TouchableOpacity activeOpacity={0.7} onPress={() => navigation.navigate('Stats')}>
+          <Text style={styles.linkText}>View full stats →</Text>
+        </TouchableOpacity>
       </SharedCard>
 
       {/* Quick actions */}
       <View style={styles.quickRow}>
-        <TouchableOpacity style={styles.quickBtn} onPress={() => navigation.navigate('Sessions')}>
+        <TouchableOpacity activeOpacity={0.7} style={styles.quickBtn} onPress={() => navigation.navigate('Sessions')}>
           <Text style={styles.quickBtnIcon}>📥</Text>
           <Text style={styles.quickBtnText}>Import FIT</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.quickBtn} onPress={() => navigation.navigate('Video')}>
+        <TouchableOpacity activeOpacity={0.7} style={styles.quickBtn} onPress={() => navigation.navigate('Video')}>
           <Text style={styles.quickBtnIcon}>🎬</Text>
           <Text style={styles.quickBtnText}>Import Video</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.quickBtn} onPress={() => navigation.navigate('Weather')}>
+        <TouchableOpacity activeOpacity={0.7} style={styles.quickBtn} onPress={() => navigation.navigate('Weather')}>
           <Text style={styles.quickBtnIcon}>🌊</Text>
           <Text style={styles.quickBtnText}>Weather</Text>
         </TouchableOpacity>
-        <TouchableOpacity
+        <TouchableOpacity activeOpacity={0.7}
           style={styles.quickBtn}
           onPress={() => lastSession
             ? navigation.navigate('PeakMoment', { sessionId: lastSession.session_id })
@@ -237,6 +252,11 @@ export default function HomeScreen({ navigation }) {
         </TouchableOpacity>
       </View>
     </ScrollView>
+    <FavouriteBeachPicker
+      visible={beachPickerVisible}
+      onClose={() => setBeachPickerVisible(false)}
+      onSelected={(beach) => { setFavouriteBeach(beach); setBeachPickerVisible(false); }}
+    />
     </SafeAreaView>
   );
 }
@@ -246,6 +266,13 @@ const styles = StyleSheet.create({
   container: { padding: 16, flexGrow: 1, paddingBottom: 40 },
 
   headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginTop: 12, marginBottom: 16 },
+  beachRow: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    paddingVertical: 8, paddingHorizontal: 12, borderRadius: 10, marginBottom: 12,
+    backgroundColor: 'rgba(26,138,181,0.08)', borderWidth: 1, borderColor: 'rgba(26,138,181,0.15)',
+  },
+  beachRowText: { color: colors.text, fontSize: 12, fontWeight: '600' },
+  beachRowChange: { color: colors.accent, fontSize: 12, fontWeight: '700' },
   greeting: { color: '#fff', fontSize: 22, fontWeight: '800' },
   dateText: { color: 'rgba(205,232,240,0.5)', fontSize: 13, marginTop: 2 },
   tierBadge: { backgroundColor: colors.accent, borderRadius: 8, paddingVertical: 5, paddingHorizontal: 10 },

@@ -5,32 +5,12 @@ import {
 import { useFocusEffect } from '@react-navigation/native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { BeachRepository, WeatherRepository } from '@commandersuite/core';
+import { WeatherRepository, UserStore, TierService } from '@commandersuite/core';
 import Header from '../components/Header';
 import SharedCard from '../components/SharedCard';
+import { ALL_BEACHES, seedBeaches } from '../utils/seedBeaches';
+import { WeatherService, conditionIndicator, degreesToCompass } from '../services/WeatherService';
 import { colors } from '../theme';
-
-// Free tier: pick up to 5 beaches to track, chosen from this list.
-// Coordinates are approximate (South West England), close enough for
-// Open-Meteo's grid resolution.
-const ALL_BEACHES = [
-  { name: 'Torpoint', emoji: '🎯', lat: 50.3833, lon: -4.1833, sort_order: 0 },
-  { name: 'Bigbury on Sea', emoji: '🌊', lat: 50.2822, lon: -3.8905, sort_order: 1 },
-  { name: 'Daymer Bay', emoji: '⚠️', lat: 50.5462, lon: -4.8371, sort_order: 2 },
-  { name: 'Marazion Beach', emoji: '🏰', lat: 50.1258, lon: -5.4756, sort_order: 3 },
-  { name: 'Plymouth Sound', emoji: '⚓', lat: 50.3468, lon: -4.1447, sort_order: 4 },
-  { name: 'Par Beach', emoji: '🏖️', lat: 50.3487, lon: -4.7024, sort_order: 5 },
-  { name: 'Mothecombe', emoji: '🌿', lat: 50.3010, lon: -3.9575, sort_order: 6 },
-  { name: 'Whitsands', emoji: '🪖', lat: 50.3376, lon: -4.2478, sort_order: 7 },
-  { name: 'Slapton Sands', emoji: '🏝️', lat: 50.2814, lon: -3.6479, sort_order: 8 },
-  { name: 'Wembury', emoji: '🐚', lat: 50.3138, lon: -4.0855, sort_order: 9 },
-  { name: 'Thurlestone', emoji: '🪨', lat: 50.2665, lon: -3.8590, sort_order: 10 },
-  { name: 'Siblyback Lake', emoji: '🏞️', lat: 50.4926, lon: -4.4693, sort_order: 11 },
-  { name: 'Coverack', emoji: '🎣', lat: 50.0295, lon: -5.0995, sort_order: 12 },
-  { name: 'Poole Harbour', emoji: '⛵', lat: 50.7000, lon: -1.9700, sort_order: 13 },
-  { name: 'Weymouth Portland Harbour', emoji: '🚀', lat: 50.6047, lon: -2.4517, sort_order: 14 },
-  { name: 'Paignton', emoji: '🎡', lat: 50.4333, lon: -3.5667, sort_order: 15 },
-];
 
 const MAX_BEACHES = 5;
 const SELECTION_KEY = 'ws_selected_beach_names';
@@ -92,21 +72,89 @@ export default function WeatherScreen() {
   const [loading, setLoading] = useState(false);
   const [pickerVisible, setPickerVisible] = useState(false);
   const [pendingSelection, setPendingSelection] = useState([]);
+  const [favouriteBeach, setFavouriteBeach] = useState(null);
+  const [tier, setTier] = useState('free');
+
+  const [beachChecks, setBeachChecks] = useState([]);
+  const [selectedCheck, setSelectedCheck] = useState(null); // { beach, weather, condition } | null
+  const [kitRec, setKitRec] = useState(null); // { mode, combos, text } | null
+  const [kitRecLoading, setKitRecLoading] = useState(false);
+  const [tideStateNow, setTideStateNow] = useState(null);
+
+  const [forecast5Day, setForecast5Day] = useState([]);
+  const [forecast5Loading, setForecast5Loading] = useState(false);
+
+  const [briefingVisible, setBriefingVisible] = useState(false);
+  const [briefingText, setBriefingText] = useState('');
+  const [briefingLoading, setBriefingLoading] = useState(false);
 
   useFocusEffect(
     useCallback(() => {
       let cancelled = false;
       (async () => {
-        await BeachRepository.seedDefaults(ALL_BEACHES);
-        const stored = await AsyncStorage.getItem(SELECTION_KEY);
+        await seedBeaches();
+        const [stored, favourite, cachedTier, tideState] = await Promise.all([
+          AsyncStorage.getItem(SELECTION_KEY),
+          UserStore.getFavouriteBeach(),
+          TierService.getCachedTier(),
+          WeatherService.getTideStateNow(),
+        ]);
         const names = stored ? JSON.parse(stored) : [];
         if (cancelled) return;
         setSelectedNames(names);
+        setFavouriteBeach(favourite);
+        setTier(cachedTier);
+        setTideStateNow(tideState);
         await loadForecasts(names, { forceRefresh: false });
+
+        const checks = await WeatherService.getBeachChecks();
+        if (!cancelled) setBeachChecks(checks);
+
+        if (favourite) {
+          setForecast5Loading(true);
+          WeatherService.get5DayForecast(favourite)
+            .then((rows) => { if (!cancelled) setForecast5Day(rows); })
+            .catch((err) => console.warn('[Weather] 5-day forecast failed:', err.message))
+            .finally(() => { if (!cancelled) setForecast5Loading(false); });
+        }
       })();
       return () => { cancelled = true; };
     }, [])
   );
+
+  async function openBeachDetail(check) {
+    setSelectedCheck(check);
+    setKitRec(null);
+    setKitRecLoading(true);
+    try {
+      const rec = await WeatherService.getKitRecommendation({
+        beach: check.beach, weather: check.weather, tideState: tideStateNow, tier,
+      });
+      setKitRec(rec);
+    } finally {
+      setKitRecLoading(false);
+    }
+  }
+
+  async function openBriefing() {
+    setBriefingVisible(true);
+    setBriefingLoading(true);
+    setBriefingText('');
+    try {
+      const favouriteCheck = beachChecks.find((c) => c.beach.id === favouriteBeach?.id);
+      const text = await WeatherService.getBriefing({
+        beach: favouriteBeach,
+        weather: favouriteCheck?.weather ?? null,
+        tideState: tideStateNow,
+        tier,
+      });
+      setBriefingText(text || "Upgrade to Premium to unlock AI briefings.");
+    } catch (err) {
+      setBriefingText('⚠️ ' + (err.message || 'Could not generate briefing.'));
+    } finally {
+      setBriefingLoading(false);
+    }
+  }
 
   // Cache-first: only hits the network for a beach if there's no cached
   // forecast for today yet, so simply reopening this screen doesn't refetch
@@ -163,10 +211,17 @@ export default function WeatherScreen() {
   }
 
   return (
-    <ScrollView style={styles.scrollBg} contentContainerStyle={styles.container}>
-      <Header badge={`Free tier · ${selectedNames.length}/${MAX_BEACHES} beaches`} title="🌊 Weather" />
+    <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" bounces={true} contentInsetAdjustmentBehavior="automatic" style={styles.scrollBg} contentContainerStyle={styles.container}>
+      <Header
+        badge={favouriteBeach ? `⭐ ${favouriteBeach.name}` : `Free tier · ${selectedNames.length}/${MAX_BEACHES} beaches`}
+        title="🌊 Weather"
+      />
 
-      <TouchableOpacity style={styles.pickBtn} onPress={openPicker}>
+      <TouchableOpacity activeOpacity={0.7} style={styles.briefingBtn} onPress={openBriefing}>
+        <Text style={styles.briefingBtnText}>☀️ Today's Full Briefing</Text>
+      </TouchableOpacity>
+
+      <TouchableOpacity activeOpacity={0.7} style={styles.pickBtn} onPress={openPicker}>
         <Text style={styles.pickBtnText}>📍 Choose Beaches</Text>
       </TouchableOpacity>
 
@@ -201,23 +256,64 @@ export default function WeatherScreen() {
       )}
 
       {selectedNames.length > 0 && (
-        <TouchableOpacity style={styles.refreshBtn} onPress={() => loadForecasts(selectedNames, { forceRefresh: true })}>
+        <TouchableOpacity activeOpacity={0.7} style={styles.refreshBtn} onPress={() => loadForecasts(selectedNames, { forceRefresh: true })}>
           <Text style={styles.refreshBtnText}>🔄 Refresh Forecast</Text>
         </TouchableOpacity>
       )}
 
-      <Modal visible={pickerVisible} animationType="slide" onRequestClose={() => setPickerVisible(false)}>
+      {favouriteBeach && (
+        <>
+          <Text style={styles.sectionLabel}>5-Day Forecast — {favouriteBeach.name}</Text>
+          <SharedCard>
+            {forecast5Loading ? (
+              <ActivityIndicator color={colors.accent} />
+            ) : forecast5Day.length === 0 ? (
+              <Text style={styles.line}>No forecast available</Text>
+            ) : (
+              <View style={styles.forecastRow}>
+                {forecast5Day.map((d) => (
+                  <View key={d.date} style={styles.forecastDay}>
+                    <Text style={styles.forecastDayName}>{d.dayName}</Text>
+                    <Text style={styles.forecastVerdict}>{d.verdict}</Text>
+                    <Text style={styles.forecastLine}>{d.windKn != null ? `${Math.round(d.windKn)}kn` : '—'}</Text>
+                    <Text style={styles.forecastLine}>{d.windDir || '—'}</Text>
+                    <Text style={styles.forecastLine}>{d.waveM != null ? `${d.waveM.toFixed(1)}m` : '—'}</Text>
+                  </View>
+                ))}
+              </View>
+            )}
+          </SharedCard>
+        </>
+      )}
+
+      <Text style={styles.sectionLabel}>Beach Checks</Text>
+      <View style={styles.beachChecksGrid}>
+        {beachChecks.map((check) => (
+          <TouchableOpacity
+            activeOpacity={0.7}
+            key={check.beach.id}
+            style={styles.checkCard}
+            onPress={() => openBeachDetail(check)}
+          >
+            <Text style={styles.checkCardEmoji}>{check.beach.emoji || ALL_BEACHES.find((b) => b.name === check.beach.name)?.emoji || '📍'}</Text>
+            <Text style={styles.checkCardName} numberOfLines={1}>{check.beach.name}</Text>
+            <Text style={styles.checkCardCondition}>{check.condition.emoji} {check.condition.label}</Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
+      <Modal statusBarTranslucent visible={pickerVisible} animationType="slide" onRequestClose={() => setPickerVisible(false)}>
         <SafeAreaView style={styles.modal} edges={['top', 'bottom']}>
           <Text style={styles.modalTitle}>Choose up to {MAX_BEACHES} beaches</Text>
 
-          <FlatList
-            data={ALL_BEACHES}
+          <FlatList showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled"
+            data={[...ALL_BEACHES].sort((a, b) => a.name.localeCompare(b.name))}
             keyExtractor={(b) => b.name}
             contentContainerStyle={{ paddingHorizontal: 16 }}
             renderItem={({ item }) => {
               const checked = pendingSelection.includes(item.name);
               return (
-                <TouchableOpacity style={styles.beachRow} onPress={() => toggleBeach(item.name)}>
+                <TouchableOpacity activeOpacity={0.7} style={styles.beachRow} onPress={() => toggleBeach(item.name)}>
                   <Text style={styles.beachRowEmoji}>{item.emoji}</Text>
                   <Text style={styles.beachRowName}>{item.name}</Text>
                   <View style={[styles.checkbox, checked && styles.checkboxChecked]}>
@@ -229,14 +325,78 @@ export default function WeatherScreen() {
           />
 
           <View style={styles.modalBottomBar}>
-            <TouchableOpacity style={styles.modalCancelBtn} onPress={() => setPickerVisible(false)}>
+            <TouchableOpacity activeOpacity={0.7} style={styles.modalCancelBtn} onPress={() => setPickerVisible(false)}>
               <Text style={styles.modalCancelBtnText}>Cancel</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.modalSaveBtn} onPress={saveSelection}>
+            <TouchableOpacity activeOpacity={0.7} style={styles.modalSaveBtn} onPress={saveSelection}>
               <Text style={styles.modalSaveBtnText}>Save</Text>
             </TouchableOpacity>
           </View>
         </SafeAreaView>
+      </Modal>
+
+      <Modal statusBarTranslucent visible={!!selectedCheck} animationType="slide" transparent onRequestClose={() => setSelectedCheck(null)}>
+        <View style={styles.overlay}>
+          <View style={styles.detailSheet}>
+            {selectedCheck && (
+              <>
+                <Text style={styles.modalTitle}>{selectedCheck.beach.emoji || '📍'} {selectedCheck.beach.name}</Text>
+                {selectedCheck.weather ? (
+                  <>
+                    <Text style={styles.line}>
+                      💨 {selectedCheck.weather.best_wind_kn ?? '—'}kn {compass(selectedCheck.weather.best_wind_dir)}
+                    </Text>
+                    <Text style={styles.line}>
+                      🌊 {selectedCheck.weather.wave_height_m != null ? `${selectedCheck.weather.wave_height_m}m` : '—'}
+                    </Text>
+                    <Text style={styles.line}>
+                      🌡️ {selectedCheck.weather.temperature_c != null ? `${selectedCheck.weather.temperature_c}°C` : '—'}
+                    </Text>
+                    {tideStateNow && <Text style={styles.line}>🌊 Tide: {tideStateNow.description}</Text>}
+                  </>
+                ) : (
+                  <Text style={styles.line}>No cached weather for today</Text>
+                )}
+
+                <Text style={[styles.sectionLabel, { marginTop: 14 }]}>Kit Recommendation</Text>
+                {kitRecLoading ? (
+                  <ActivityIndicator color={colors.accent} />
+                ) : kitRec?.mode === 'ai' && kitRec.text ? (
+                  <Text style={styles.line}>{kitRec.text}</Text>
+                ) : kitRec?.combos?.length ? (
+                  kitRec.combos.map((c) => (
+                    <Text key={c.id} style={styles.line}>
+                      • {c.name || [c.board_name, c.sail_name].filter(Boolean).join(' / ')}
+                      {c.wind_min_kn != null ? ` (${c.wind_min_kn}-${c.wind_max_kn ?? '?'}kn)` : ''}
+                    </Text>
+                  ))
+                ) : (
+                  <Text style={styles.line}>No matching gear combos logged for these conditions.</Text>
+                )}
+
+                <TouchableOpacity activeOpacity={0.7} style={styles.modalCloseBtn} onPress={() => setSelectedCheck(null)}>
+                  <Text style={styles.modalCloseBtnText}>Close</Text>
+                </TouchableOpacity>
+              </>
+            )}
+          </View>
+        </View>
+      </Modal>
+
+      <Modal statusBarTranslucent visible={briefingVisible} animationType="slide" transparent onRequestClose={() => setBriefingVisible(false)}>
+        <View style={styles.overlay}>
+          <View style={styles.detailSheet}>
+            <Text style={styles.modalTitle}>☀️ Today's Briefing</Text>
+            {briefingLoading ? (
+              <ActivityIndicator color={colors.accent} style={{ marginVertical: 20 }} />
+            ) : (
+              <Text style={styles.line}>{briefingText}</Text>
+            )}
+            <TouchableOpacity activeOpacity={0.7} style={styles.modalCloseBtn} onPress={() => setBriefingVisible(false)}>
+              <Text style={styles.modalCloseBtnText}>Close</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
       </Modal>
     </ScrollView>
   );
@@ -294,4 +454,39 @@ const styles = StyleSheet.create({
   },
   checkboxChecked: { backgroundColor: colors.accent, borderColor: colors.accent },
   checkboxTick: { color: '#fff', fontSize: 13, fontWeight: '700' },
+
+  briefingBtn: {
+    backgroundColor: colors.accent, padding: 16, borderRadius: 12,
+    alignItems: 'center', marginBottom: 12,
+  },
+  briefingBtnText: { color: '#fff', fontWeight: '800', fontSize: 15 },
+
+  sectionLabel: {
+    color: 'rgba(205,232,240,0.5)', fontSize: 10, fontWeight: '600',
+    letterSpacing: 2, textTransform: 'uppercase', marginBottom: 8, marginTop: 18,
+  },
+
+  forecastRow: { flexDirection: 'row', justifyContent: 'space-between' },
+  forecastDay: { alignItems: 'center', flex: 1 },
+  forecastDayName: { color: colors.text, fontSize: 11, fontWeight: '700', marginBottom: 4 },
+  forecastVerdict: { fontSize: 16, marginBottom: 4 },
+  forecastLine: { color: 'rgba(205,232,240,0.6)', fontSize: 10 },
+
+  beachChecksGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+  checkCard: {
+    width: '47%', alignItems: 'center', paddingVertical: 16, borderRadius: 12,
+    backgroundColor: 'rgba(26,138,181,0.08)', borderWidth: 1, borderColor: 'rgba(26,138,181,0.3)',
+    marginBottom: 10,
+  },
+  checkCardEmoji: { fontSize: 22, marginBottom: 6 },
+  checkCardName: { color: colors.text, fontSize: 12, fontWeight: '700', marginBottom: 4, paddingHorizontal: 4 },
+  checkCardCondition: { color: 'rgba(205,232,240,0.6)', fontSize: 11 },
+
+  overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' },
+  detailSheet: {
+    backgroundColor: colors.deep, borderTopLeftRadius: 16, borderTopRightRadius: 16,
+    padding: 20, maxHeight: '80%', borderWidth: 1, borderColor: 'rgba(26,138,181,0.25)',
+  },
+  modalCloseBtn: { alignItems: 'center', paddingVertical: 14, marginTop: 14 },
+  modalCloseBtnText: { color: 'rgba(205,232,240,0.5)', fontSize: 14, fontWeight: '600' },
 });

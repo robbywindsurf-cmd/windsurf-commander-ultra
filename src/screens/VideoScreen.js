@@ -346,7 +346,7 @@ export default function VideoScreen({ navigation }) {
         </View>
       </Modal>
 
-      <Modal visible={!!pendingImport} animationType="slide" transparent onRequestClose={cancelImport}>
+      <Modal statusBarTranslucent visible={!!pendingImport} animationType="slide" transparent onRequestClose={cancelImport}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalBox}>
             <Text style={styles.modalTitle}>Which session is this from?</Text>
@@ -354,12 +354,12 @@ export default function VideoScreen({ navigation }) {
             {pendingImport?.videoStartUtc && (
               <Text style={styles.modalGps}>📍 GPS: {pendingImport.videoStartUtc}</Text>
             )}
-            <FlatList
+            <FlatList showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled"
               data={allSessions}
               keyExtractor={item => item.session_id || item.date}
               style={styles.modalList}
               renderItem={({ item }) => (
-                <TouchableOpacity
+                <TouchableOpacity activeOpacity={0.7}
                   style={styles.modalRow}
                   onPress={() => confirmSessionForImport(item.date, item.session_id, item.name)}
                 >
@@ -370,21 +370,21 @@ export default function VideoScreen({ navigation }) {
                 </TouchableOpacity>
               )}
             />
-            <TouchableOpacity style={styles.modalCancelBtn} onPress={cancelImport}>
+            <TouchableOpacity activeOpacity={0.7} style={styles.modalCancelBtn} onPress={cancelImport}>
               <Text style={styles.modalCancelBtnText}>Cancel</Text>
             </TouchableOpacity>
           </View>
         </View>
       </Modal>
 
-      <ScrollView contentContainerStyle={styles.container} style={styles.scrollBg}>
+      <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" bounces={true} contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.container} style={styles.scrollBg}>
         <Header title="🎬 Video Library" />
 
         <FeatureGate feature="FULL_ANALYSIS" onUpgradePress={() => navigation.navigate('Upgrade', { featureId: 'FULL_ANALYSIS' })}>
           {null}
         </FeatureGate>
 
-        <TouchableOpacity style={styles.importBtn} onPress={pickVideoFromPhone}>
+        <TouchableOpacity activeOpacity={0.7} style={styles.importBtn} onPress={pickVideoFromPhone}>
           <Text style={styles.importBtnText}>📁 Import Video from Files</Text>
         </TouchableOpacity>
         {!!pickerError && <Text style={styles.errorText}>⚠️ {pickerError}</Text>}
@@ -403,13 +403,13 @@ export default function VideoScreen({ navigation }) {
             {!!playerError && <Text style={styles.errorText}>⚠️ {playerError}</Text>}
 
             <View style={styles.playerBtnRow}>
-              <TouchableOpacity style={styles.closeBtn} onPress={closeVideo}>
+              <TouchableOpacity activeOpacity={0.7} style={styles.closeBtn} onPress={closeVideo}>
                 <Text style={styles.closeBtnText}>✕ Close</Text>
               </TouchableOpacity>
             </View>
 
             <View style={styles.analyseSection}>
-              <TouchableOpacity
+              <TouchableOpacity activeOpacity={0.7}
                 style={[styles.analyseBtn, analysing && styles.analyseBtnDisabled]}
                 onPress={() => navigation.navigate('ClipSelector', {
                   videoUri: activeVideo.url,
@@ -437,7 +437,7 @@ export default function VideoScreen({ navigation }) {
               {analysisResult && (
                 <View style={styles.analyseResultBox}>
                   <Text style={styles.analyseResultTitle}>✅ Analysis complete</Text>
-                  <TouchableOpacity
+                  <TouchableOpacity activeOpacity={0.7}
                     style={[styles.analyseBtn, { marginTop: 8, backgroundColor: SKY }]}
                     onPress={() => navigation.navigate('SessionDetail', { sessionId: analysisResult.sessionId })}
                   >
@@ -464,13 +464,13 @@ export default function VideoScreen({ navigation }) {
             <View style={styles.fileRow}>
               {videosByDate[date].map(item => (
                 <View key={item._index} style={styles.fileBtnWrap}>
-                  <TouchableOpacity
+                  <TouchableOpacity activeOpacity={0.7}
                     style={[styles.fileBtn, styles.importedFileBtn]}
                     onPress={() => playVideo(item)}
                   >
                     <Text style={styles.fileBtnText}>📱 {item.fname}</Text>
                   </TouchableOpacity>
-                  <TouchableOpacity style={styles.deleteBtn} onPress={() => deleteVideo(item._index)}>
+                  <TouchableOpacity activeOpacity={0.7} style={styles.deleteBtn} onPress={() => deleteVideo(item._index)}>
                     <Text style={styles.deleteBtnText}>✕</Text>
                   </TouchableOpacity>
                 </View>

@@ -84,10 +84,10 @@ export default function PeakMomentScreen({ route, navigation }) {
       <View style={styles.center}>
         <Header title="🏆 Peak Moment" />
         <Text style={styles.emptyText}>Import your GPS data to find your peak moment</Text>
-        <TouchableOpacity style={styles.actionBtn} onPress={() => navigation.navigate('ImportData')}>
+        <TouchableOpacity activeOpacity={0.7} style={styles.actionBtn} onPress={() => navigation.navigate('ImportData')}>
           <Text style={styles.actionBtnText}>Import Data</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.closeBtn} onPress={() => navigation.goBack()}>
+        <TouchableOpacity activeOpacity={0.7} style={styles.closeBtn} onPress={() => navigation.goBack()}>
           <Text style={styles.closeBtnText}>Close</Text>
         </TouchableOpacity>
       </View>
@@ -97,13 +97,21 @@ export default function PeakMomentScreen({ route, navigation }) {
   const canAttachVideo = canAccess('PEAK_MOMENT_VIDEO', tier);
 
   return (
-    <ScrollView style={styles.screen} contentContainerStyle={styles.scrollContent}>
+    <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" bounces={true} contentInsetAdjustmentBehavior="automatic" style={styles.screen} contentContainerStyle={styles.scrollContent}>
       <Header title="🏆 Peak Moment" />
 
       {!peakMoment.skeletonFrame && (
         <Text style={styles.hintText}>
           Analyse a video from this session to add your skeleton overlay
         </Text>
+      )}
+
+      {peakMoment.weatherMissing && (
+        <TouchableOpacity activeOpacity={0.7} onPress={() => navigation.navigate('ImportData')}>
+          <Text style={styles.hintText}>
+            No weather data for this date — run "Backfill Historical Weather" from Import Data
+          </Text>
+        </TouchableOpacity>
       )}
 
       <View style={styles.cardWrap}>
@@ -117,13 +125,13 @@ export default function PeakMomentScreen({ route, navigation }) {
       )}
 
       <View style={styles.actions}>
-        <TouchableOpacity style={styles.actionBtn} onPress={handleShare} disabled={busy}>
+        <TouchableOpacity activeOpacity={0.7} style={styles.actionBtn} onPress={handleShare} disabled={busy}>
           {busy ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.actionBtnText}>Share</Text>}
         </TouchableOpacity>
-        <TouchableOpacity style={styles.actionBtnSecondary} onPress={handleSaveToPhotos} disabled={busy}>
+        <TouchableOpacity activeOpacity={0.7} style={styles.actionBtnSecondary} onPress={handleSaveToPhotos} disabled={busy}>
           <Text style={styles.actionBtnSecondaryText}>Save to Photos</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.closeBtn} onPress={() => navigation.goBack()}>
+        <TouchableOpacity activeOpacity={0.7} style={styles.closeBtn} onPress={() => navigation.goBack()}>
           <Text style={styles.closeBtnText}>Close</Text>
         </TouchableOpacity>
       </View>

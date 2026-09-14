@@ -1,6 +1,7 @@
 import React, { useCallback, useState } from 'react';
 import {
   ScrollView, Text, View, TextInput, TouchableOpacity, StyleSheet, Modal, Alert,
+  KeyboardAvoidingView, Platform,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { EquipmentRepository } from '@commandersuite/core';
@@ -153,11 +154,11 @@ export default function GarageScreen() {
   const inactiveCount = equipment.filter((e) => e.active !== 1).length;
 
   return (
-    <ScrollView style={styles.scrollBg} contentContainerStyle={styles.container}>
+    <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" bounces={true} contentInsetAdjustmentBehavior="automatic" style={styles.scrollBg} contentContainerStyle={styles.container}>
       <Header badge={`${equipment.filter((e) => e.active === 1).length} active · ${combos.length} combos`} title="⚙️ Garage" />
 
       {inactiveCount > 0 && (
-        <TouchableOpacity style={styles.inactiveToggle} onPress={() => setShowInactive((v) => !v)}>
+        <TouchableOpacity activeOpacity={0.7} style={styles.inactiveToggle} onPress={() => setShowInactive((v) => !v)}>
           <Text style={styles.inactiveToggleText}>
             {showInactive ? '👁️ Showing inactive gear' : `👁️‍🗨️ Show ${inactiveCount} inactive item${inactiveCount > 1 ? 's' : ''}`}
           </Text>
@@ -168,7 +169,7 @@ export default function GarageScreen() {
         <View key={key}>
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionLabel}>{emoji} {label}</Text>
-            <TouchableOpacity style={styles.addBtn} onPress={() => openAddForm(key)}>
+            <TouchableOpacity activeOpacity={0.7} style={styles.addBtn} onPress={() => openAddForm(key)}>
               <Text style={styles.addBtnText}>+ Add</Text>
             </TouchableOpacity>
           </View>
@@ -178,7 +179,7 @@ export default function GarageScreen() {
           ) : (
             byType(key).map((item) => (
               <SwipeableRow key={item.id} onDelete={() => deleteEquipment(item.id)} confirmMessage={`Remove ${item.name}?`}>
-                <TouchableOpacity onPress={() => openEditForm(item)} style={[styles.card, item.active !== 1 && styles.cardInactive]}>
+                <TouchableOpacity activeOpacity={0.7} onPress={() => openEditForm(item)} style={[styles.card, item.active !== 1 && styles.cardInactive]}>
                   <View style={{ flex: 1 }}>
                     <Text style={styles.cardName}>
                       {item.name}{item.active !== 1 ? '  ' : ''}
@@ -187,7 +188,7 @@ export default function GarageScreen() {
                     <Text style={styles.cardMeta}>{metaLine(item)}</Text>
                   </View>
                   <Text style={styles.editIcon}>✏️</Text>
-                  <TouchableOpacity onPress={() => Alert.alert('Delete?', `Remove ${item.name}?`, [
+                  <TouchableOpacity activeOpacity={0.7} onPress={() => Alert.alert('Delete?', `Remove ${item.name}?`, [
                     { text: 'Cancel', style: 'cancel' },
                     { text: 'Delete', style: 'destructive', onPress: () => deleteEquipment(item.id) },
                   ])}>
@@ -202,7 +203,7 @@ export default function GarageScreen() {
 
       <View style={styles.sectionHeader}>
         <Text style={styles.sectionLabel}>🎯 Gear Combinations</Text>
-        <TouchableOpacity style={styles.addBtn} onPress={openComboForm}>
+        <TouchableOpacity activeOpacity={0.7} style={styles.addBtn} onPress={openComboForm}>
           <Text style={styles.addBtnText}>+ Add</Text>
         </TouchableOpacity>
       </View>
@@ -232,13 +233,13 @@ export default function GarageScreen() {
       )}
 
       {/* Add/Edit equipment modal */}
-      <Modal visible={formVisible} animationType="slide" transparent onRequestClose={() => setFormVisible(false)}>
-        <View style={styles.modalOverlay}>
+      <Modal statusBarTranslucent visible={formVisible} animationType="slide" transparent onRequestClose={() => setFormVisible(false)}>
+        <KeyboardAvoidingView style={styles.modalOverlay} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
           <View style={styles.modalBox}>
             <Text style={styles.modalTitle}>{form.id ? 'Edit' : 'Add'} {form.type}</Text>
 
-            <TextInput style={styles.input} placeholder="Name" placeholderTextColor="rgba(205,232,240,0.4)" value={form.name} onChangeText={(v) => setForm({ ...form, name: v })} />
-            <TextInput style={styles.input} placeholder="Brand" placeholderTextColor="rgba(205,232,240,0.4)" value={form.brand} onChangeText={(v) => setForm({ ...form, brand: v })} />
+            <TextInput autoCorrect={false} style={styles.input} placeholder="Name" placeholderTextColor="rgba(205,232,240,0.4)" value={form.name} onChangeText={(v) => setForm({ ...form, name: v })} />
+            <TextInput autoCorrect={false} style={styles.input} placeholder="Brand" placeholderTextColor="rgba(205,232,240,0.4)" value={form.brand} onChangeText={(v) => setForm({ ...form, brand: v })} />
 
             {form.type === 'board' && (
               <>
@@ -260,7 +261,7 @@ export default function GarageScreen() {
                 <TextInput style={styles.input} placeholder="Size (cm)" placeholderTextColor="rgba(205,232,240,0.4)" keyboardType="numeric" value={form.size} onChangeText={(v) => setForm({ ...form, size: v })} />
                 <View style={styles.chipRow}>
                   {FIN_TYPES.map((t) => (
-                    <TouchableOpacity key={t} style={[styles.chip, form.fin_type === t && styles.chipActive]} onPress={() => setForm({ ...form, fin_type: t })}>
+                    <TouchableOpacity activeOpacity={0.7} key={t} style={[styles.chip, form.fin_type === t && styles.chipActive]} onPress={() => setForm({ ...form, fin_type: t })}>
                       <Text style={[styles.chipText, form.fin_type === t && styles.chipTextActive]}>{t}</Text>
                     </TouchableOpacity>
                   ))}
@@ -272,20 +273,20 @@ export default function GarageScreen() {
             <TextInput style={styles.input} placeholder="Notes" placeholderTextColor="rgba(205,232,240,0.4)" value={form.notes} onChangeText={(v) => setForm({ ...form, notes: v })} />
 
             <View style={styles.modalBtnRow}>
-              <TouchableOpacity style={styles.cancelBtn} onPress={() => setFormVisible(false)}>
+              <TouchableOpacity activeOpacity={0.7} style={styles.cancelBtn} onPress={() => setFormVisible(false)}>
                 <Text style={styles.cancelBtnText}>Cancel</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.saveBtn} onPress={saveForm}>
+              <TouchableOpacity activeOpacity={0.7} style={styles.saveBtn} onPress={saveForm}>
                 <Text style={styles.saveBtnText}>Save</Text>
               </TouchableOpacity>
             </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* Add gear combo modal */}
-      <Modal visible={comboVisible} animationType="slide" transparent onRequestClose={() => setComboVisible(false)}>
-        <View style={styles.modalOverlay}>
+      <Modal statusBarTranslucent visible={comboVisible} animationType="slide" transparent onRequestClose={() => setComboVisible(false)}>
+        <KeyboardAvoidingView style={styles.modalOverlay} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
           <View style={styles.modalBox}>
             <Text style={styles.modalTitle}>New Gear Combo</Text>
             <TextInput style={styles.input} placeholder='e.g. "Light wind setup"' placeholderTextColor="rgba(205,232,240,0.4)" value={comboName} onChangeText={setComboName} />
@@ -293,7 +294,7 @@ export default function GarageScreen() {
             <Text style={styles.pickerLabel}>Board</Text>
             <View style={styles.chipRow}>
               {byType('board').map((b) => (
-                <TouchableOpacity key={b.id} style={[styles.chip, comboBoardId === b.id && styles.chipActive]} onPress={() => setComboBoardId(b.id)}>
+                <TouchableOpacity activeOpacity={0.7} key={b.id} style={[styles.chip, comboBoardId === b.id && styles.chipActive]} onPress={() => setComboBoardId(b.id)}>
                   <Text style={[styles.chipText, comboBoardId === b.id && styles.chipTextActive]}>{b.name}</Text>
                 </TouchableOpacity>
               ))}
@@ -303,7 +304,7 @@ export default function GarageScreen() {
             <Text style={styles.pickerLabel}>Sail</Text>
             <View style={styles.chipRow}>
               {byType('sail').map((s) => (
-                <TouchableOpacity key={s.id} style={[styles.chip, comboSailId === s.id && styles.chipActive]} onPress={() => setComboSailId(s.id)}>
+                <TouchableOpacity activeOpacity={0.7} key={s.id} style={[styles.chip, comboSailId === s.id && styles.chipActive]} onPress={() => setComboSailId(s.id)}>
                   <Text style={[styles.chipText, comboSailId === s.id && styles.chipTextActive]}>{s.name}</Text>
                 </TouchableOpacity>
               ))}
@@ -313,22 +314,22 @@ export default function GarageScreen() {
             <Text style={styles.pickerLabel}>Fin (optional)</Text>
             <View style={styles.chipRow}>
               {byType('fin').map((f) => (
-                <TouchableOpacity key={f.id} style={[styles.chip, comboFinId === f.id && styles.chipActive]} onPress={() => setComboFinId(comboFinId === f.id ? null : f.id)}>
+                <TouchableOpacity activeOpacity={0.7} key={f.id} style={[styles.chip, comboFinId === f.id && styles.chipActive]} onPress={() => setComboFinId(comboFinId === f.id ? null : f.id)}>
                   <Text style={[styles.chipText, comboFinId === f.id && styles.chipTextActive]}>{f.name}</Text>
                 </TouchableOpacity>
               ))}
             </View>
 
             <View style={styles.modalBtnRow}>
-              <TouchableOpacity style={styles.cancelBtn} onPress={() => setComboVisible(false)}>
+              <TouchableOpacity activeOpacity={0.7} style={styles.cancelBtn} onPress={() => setComboVisible(false)}>
                 <Text style={styles.cancelBtnText}>Cancel</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.saveBtn} onPress={saveCombo}>
+              <TouchableOpacity activeOpacity={0.7} style={styles.saveBtn} onPress={saveCombo}>
                 <Text style={styles.saveBtnText}>Save</Text>
               </TouchableOpacity>
             </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </ScrollView>
   );
