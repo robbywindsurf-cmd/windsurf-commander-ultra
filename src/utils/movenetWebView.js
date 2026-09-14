@@ -25,8 +25,12 @@ export const MOVENET_HTML = `<!DOCTYPE html>
     var OUT_WIDTH        = 960;
     var OUT_HEIGHT       = 720;
     var TRACKING_SMOOTH  = 0.75;
-    var WINDOW_THETA     = 30;
-    var WINDOW_PHI       = 20;
+    var WINDOW_THETA     = 20;
+    var WINDOW_PHI       = 15;
+    var MIN_TRACKING_CONFIDENCE = 0.4;
+    var MAX_DELTA_PER_FRAME     = 5; // degrees
+    var MAX_MISSES_BEFORE_RESET = 5;
+    var consecutiveMisses = 0;
 
     // ── Skeleton ──────────────────────────────────────────────────────────
     var SEGMENTS = [
@@ -105,9 +109,39 @@ export const MOVENET_HTML = `<!DOCTYPE html>
       return { cx: cx, cy: cy };
     }
 
+    // ── Torso confidence ──────────────────────────────────────────────────
+    function getTorsoConfidence(keypoints) {
+      var torsoIdx = [5, 6, 11, 12];
+      var torsoConfs = torsoIdx.map(function(i) {
+        return (keypoints[i] && keypoints[i][2]) || 0;
+      });
+      var avgConf = torsoConfs.reduce(function(a, b) { return a + b; }, 0) / torsoConfs.length;
+      var detectedCount = torsoConfs.filter(function(c) { return c >= MIN_TRACKING_CONFIDENCE; }).length;
+      return { avgConf: avgConf, detectedCount: detectedCount };
+    }
+
     // ── Update tracking angles ────────────────────────────────────────────
-    function updateTrackingAngles(centroid, currentTheta, currentPhi, anchorTheta, anchorPhi) {
-      if (!centroid) return { nextTheta: currentTheta, nextPhi: currentPhi };
+    function updateTrackingAngles(centroid, keypoints, currentTheta, currentPhi, anchorTheta, anchorPhi) {
+      var torso = getTorsoConfidence(keypoints);
+
+      // Require at least 2 of 4 torso keypoints above confidence threshold
+      var torsoFound = torso.detectedCount >= 2 && torso.avgConf >= MIN_TRACKING_CONFIDENCE;
+
+      if (!centroid || !torsoFound) {
+        consecutiveMisses++;
+        if (consecutiveMisses >= MAX_MISSES_BEFORE_RESET) {
+          consecutiveMisses = 0;
+          return {
+            nextTheta: anchorTheta, nextPhi: anchorPhi,
+            trackingAction: 'reset', avgTorsoConfidence: torso.avgConf
+          };
+        }
+        return {
+          nextTheta: currentTheta, nextPhi: currentPhi,
+          trackingAction: 'held', avgTorsoConfidence: torso.avgConf
+        };
+      }
+      consecutiveMisses = 0;
 
       var offsetX  = centroid.cx - OUT_WIDTH  / 2;
       var offsetY  = centroid.cy - OUT_HEIGHT / 2;
@@ -115,6 +149,16 @@ export const MOVENET_HTML = `<!DOCTYPE html>
 
       var newTheta = currentTheta + offsetX * degPerPx * (1 - TRACKING_SMOOTH);
       var newPhi   = currentPhi   - offsetY * degPerPx * (1 - TRACKING_SMOOTH);
+
+      // Reject sudden jumps — hold current position instead
+      var deltaTheta = newTheta - currentTheta;
+      var deltaPhi   = newPhi   - currentPhi;
+      if (Math.abs(deltaTheta) > MAX_DELTA_PER_FRAME || Math.abs(deltaPhi) > MAX_DELTA_PER_FRAME) {
+        return {
+          nextTheta: currentTheta, nextPhi: currentPhi,
+          trackingAction: 'rejected_jump', avgTorsoConfidence: torso.avgConf
+        };
+      }
 
       // Constrain to search window around initial tap
       if (anchorTheta !== null && anchorTheta !== undefined) {
@@ -125,7 +169,10 @@ export const MOVENET_HTML = `<!DOCTYPE html>
       }
 
       newPhi = Math.max(-85, Math.min(85, newPhi));
-      return { nextTheta: newTheta, nextPhi: newPhi };
+      return {
+        nextTheta: newTheta, nextPhi: newPhi,
+        trackingAction: 'updated', avgTorsoConfidence: torso.avgConf
+      };
     }
 
     // ── Equirectangular → perspective ─────────────────────────────────────
@@ -221,10 +268,13 @@ export const MOVENET_HTML = `<!DOCTYPE html>
         var poses = await detector.estimatePoses(inferenceCanvas, { flipHorizontal: false });
 
         if (!poses || poses.length === 0) {
+          var missAngles = updateTrackingAngles(null, [], currentTheta, currentPhi, anchorTheta, anchorPhi);
           window.ReactNativeWebView.postMessage(JSON.stringify({
             type: 'result', frameId: frameId,
             keypoints: null, annotatedFrame: null,
-            nextTheta: currentTheta, nextPhi: currentPhi
+            nextTheta: missAngles.nextTheta, nextPhi: missAngles.nextPhi,
+            trackingAction: missAngles.trackingAction,
+            avgTorsoConfidence: missAngles.avgTorsoConfidence
           }));
           return;
         }
@@ -234,7 +284,7 @@ export const MOVENET_HTML = `<!DOCTYPE html>
         });
 
         var centroid   = getRiderCentroid(keypoints, 0.25);
-        var nextAngles = updateTrackingAngles(centroid, currentTheta, currentPhi, anchorTheta, anchorPhi);
+        var nextAngles = updateTrackingAngles(centroid, keypoints, currentTheta, currentPhi, anchorTheta, anchorPhi);
 
         var infCtx = inferenceCanvas.getContext('2d');
         drawSkeleton(infCtx, keypoints, 0.25);
@@ -247,6 +297,8 @@ export const MOVENET_HTML = `<!DOCTYPE html>
           annotatedFrame: annotatedFrame,
           nextTheta:      nextAngles.nextTheta,
           nextPhi:        nextAngles.nextPhi,
+          trackingAction: nextAngles.trackingAction,
+          avgTorsoConfidence: nextAngles.avgTorsoConfidence,
         }));
 
       } catch (err) {

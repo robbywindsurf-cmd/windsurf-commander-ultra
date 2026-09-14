@@ -80,11 +80,14 @@ export async function analyseSessionVideo({
     // onFrame callback instead of round-tripping through the DB.
     let hipX = null;
     let measurements = null;
+    const trackingAction = result?.trackingAction ?? null;
+    const avgTorsoConfidence = result?.avgTorsoConfidence ?? null;
+
     if (!keypoints) {
-      frameResults.push({ time_s: timeS, detected: false });
+      frameResults.push({ time_s: timeS, detected: false, trackingAction, avgTorsoConfidence });
     } else {
       measurements = analyseFrame(keypoints, riderProfile);
-      frameResults.push({ time_s: timeS, detected: true, ...measurements });
+      frameResults.push({ time_s: timeS, detected: true, trackingAction, avgTorsoConfidence, ...measurements });
       if (!firstDetectedFrame && annotatedFrame) firstDetectedFrame = annotatedFrame;
 
       const lHip = keypoints[11];
