@@ -6,7 +6,6 @@ import Papa from 'papaparse';
 import Header from '../components/Header';
 import SharedCard from '../components/SharedCard';
 import { SessionRepository, EquipmentRepository, TrackpointRepository, WeatherRepository, TideRepository, EmbeddingService, TierService, canAccess } from '@commandersuite/core';
-import { WeatherBackfillService } from '../services/WeatherBackfillService';
 
 // Trackpoint CSV files run to hundreds of thousands of rows / tens of MB —
 // never load the whole thing into memory. Read fixed-size byte windows,
@@ -317,16 +316,6 @@ function SimpleCsvImportSection({ title, icon, hint, buttonLabel, onImport }) {
 }
 
 export default function ImportDataScreen({ navigation }) {
-  const [missingWeatherCount, setMissingWeatherCount] = useState(null);
-  const [backfillRunning, setBackfillRunning] = useState(false);
-  const [backfillProgress, setBackfillProgress] = useState({ completed: 0, total: 0 });
-  const [backfillResult, setBackfillResult] = useState(null);
-  const [backfillError, setBackfillError] = useState('');
-
-  useEffect(() => {
-    WeatherBackfillService.countMissing().then(setMissingWeatherCount).catch(() => {});
-  }, []);
-
   const [tier, setTier] = useState('free');
   const [indexStatus, setIndexStatus] = useState(null); // { indexed, total, lastIndexedAt, available }
   const [indexing, setIndexing] = useState(false);
@@ -349,24 +338,6 @@ export default function ImportDataScreen({ navigation }) {
       setIndexError(e.message || 'Indexing failed');
     } finally {
       setIndexing(false);
-    }
-  }
-
-  async function runWeatherBackfill() {
-    setBackfillRunning(true);
-    setBackfillError('');
-    setBackfillResult(null);
-    setBackfillProgress({ completed: 0, total: 0 });
-    try {
-      const result = await WeatherBackfillService.backfillAllSessions((completed, total) =>
-        setBackfillProgress({ completed, total })
-      );
-      setBackfillResult(result);
-      setMissingWeatherCount(await WeatherBackfillService.countMissing());
-    } catch (e) {
-      setBackfillError(e.message || 'Backfill failed');
-    } finally {
-      setBackfillRunning(false);
     }
   }
 
@@ -580,56 +551,6 @@ export default function ImportDataScreen({ navigation }) {
       ) : (
         <SharedCard style={styles.previewCard}>
           <Text style={styles.previewName}>Upgrade to Premium to enable AI-powered semantic search</Text>
-        </SharedCard>
-      )}
-
-      <Text style={styles.sectionLabel}>🌦️ Backfill Historical Weather</Text>
-      <SharedCard style={styles.previewCard}>
-        {missingWeatherCount == null ? (
-          <Text style={styles.previewName}>Checking weather coverage…</Text>
-        ) : (
-          <Text style={styles.previewName}>
-            {missingWeatherCount} session date{missingWeatherCount === 1 ? '' : 's'} missing weather data
-          </Text>
-        )}
-      </SharedCard>
-
-      {!backfillRunning && !backfillResult && missingWeatherCount > 0 && (
-        <TouchableOpacity activeOpacity={0.7} style={styles.importBtn} onPress={runWeatherBackfill}>
-          <Text style={styles.importBtnText}>🌦️ Backfill Historical Weather</Text>
-        </TouchableOpacity>
-      )}
-
-      {backfillRunning && (
-        <SharedCard style={styles.progressCard}>
-          <Text style={styles.progressLabel}>Fetching from Open-Meteo…</Text>
-          <View style={styles.progressTrack}>
-            <View
-              style={[
-                styles.progressFill,
-                { width: `${backfillProgress.total ? Math.round((backfillProgress.completed / backfillProgress.total) * 100) : 0}%` },
-              ]}
-            />
-          </View>
-          <Text style={styles.progressCount}>
-            {backfillProgress.completed} / {backfillProgress.total} sessions
-          </Text>
-        </SharedCard>
-      )}
-
-      {!!backfillError && <Text style={styles.errorText}>⚠️ {backfillError}</Text>}
-
-      {backfillResult && (
-        <SharedCard style={styles.resultCard}>
-          <View style={styles.resultCenter}>
-            <Text style={styles.resultIcon}>{backfillResult.success ? '✅' : '⚠️'}</Text>
-            <Text style={[styles.resultTitle, { color: backfillResult.success ? SAFE : ACCENT }]}>
-              {backfillResult.count} date{backfillResult.count === 1 ? '' : 's'} backfilled
-            </Text>
-            {backfillResult.errors.length > 0 && (
-              <Text style={styles.resultSub}>{backfillResult.errors.length} error(s) — check network and retry</Text>
-            )}
-          </View>
         </SharedCard>
       )}
 

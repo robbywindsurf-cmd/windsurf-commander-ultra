@@ -1,7 +1,7 @@
 import React, { useCallback, useState } from 'react';
 import { ScrollView, Text, View, StyleSheet, TouchableOpacity } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
-import { SessionRepository, AnalysisRepository, TrackpointRepository, TideRepository, WeatherRepository, UserStore, FeatureGate } from '@commandersuite/core';
+import { SessionRepository, AnalysisRepository, TrackpointRepository, TideRepository, WeatherRepository, UserStore, FeatureGate, WindEstimator, ManoeuvreDetector, AnalyticsService } from '@commandersuite/core';
 import Header from '../components/Header';
 import SharedCard from '../components/SharedCard';
 import SessionRouteMap from '../components/SessionRouteMap';
@@ -16,6 +16,7 @@ export default function SessionDetailScreen({ route, navigation }) {
   const [tidePredictions, setTidePredictions] = useState([]);
   const [tideStateAtStart, setTideStateAtStart] = useState(null);
   const [weather, setWeather] = useState(null);
+  const [sailingStats, setSailingStats] = useState(null); // { wind, manoeuvres, vmg } | null
 
   useFocusEffect(
     useCallback(() => {
@@ -30,20 +31,51 @@ export default function SessionDetailScreen({ route, navigation }) {
           if (cancelled) return;
           setSession(s); setAnalyses(a); setTrackpoints(tp);
 
+          let weatherRow = null;
           if (s?.date) {
             const startTimestamp = s.start_time ? `${s.date}T${s.start_time}` : s.date;
             const favouriteBeach = await UserStore.getFavouriteBeach();
-            const [predictions, tideState, weatherRow] = await Promise.all([
+            const [predictions, tideState, wRow] = await Promise.all([
               TideRepository.getPredictionsForDate(s.date),
               TideRepository.getTideStateAtTime(startTimestamp),
               favouriteBeach ? WeatherRepository.getForBeach(favouriteBeach.name, s.date) : null,
             ]);
+            weatherRow = wRow;
             if (!cancelled) {
               setTidePredictions(predictions);
               setTideStateAtStart(tideState);
               setWeather(weatherRow);
             }
           }
+
+          // Full (unsampled) trackpoints for wind/manoeuvre/VMG estimation —
+          // the 400-point sample above is for the route map, too sparse to
+          // reliably catch short tacks/gybes.
+          TrackpointRepository.getForSession(sessionId)
+            .then((fullTp) => {
+              if (cancelled) return;
+              const wind = WindEstimator.estimateFromTrackpoints(fullTp);
+
+              // Fall back to the beach's forecast wind direction (weather_cache,
+              // via WeatherRepository) when the GPS estimate's confidence is
+              // low/none — there's no per-session wind_direction column on
+              // `sessions` itself, this is the same "stored" wind data the
+              // Weather card above already displays.
+              const windFromDeg = (wind.confidence === 'high' || wind.confidence === 'medium')
+                ? wind.windFromDeg
+                : weatherRow?.best_wind_dir ?? null;
+              const windSource = (wind.confidence === 'high' || wind.confidence === 'medium')
+                ? 'gps_estimated'
+                : weatherRow?.best_wind_dir != null
+                  ? 'stored'
+                  : null;
+
+              const manoeuvres = ManoeuvreDetector.detect(fullTp, windFromDeg);
+              const vmgSamples = AnalyticsService.computeVMG(fullTp, windFromDeg);
+              const vmg = AnalyticsService.summarizeVMG(vmgSamples);
+              setSailingStats({ wind, windFromDeg, windSource, manoeuvres, vmg });
+            })
+            .catch((err) => console.warn('[SessionDetail] sailing analytics failed:', err.message));
         } catch (err) {
           console.warn('[SessionDetail] load error:', err.message);
         }
@@ -127,6 +159,40 @@ export default function SessionDetailScreen({ route, navigation }) {
         ))
       )}
 
+      <Text style={styles.sectionLabel}>Sailing Analytics (estimated)</Text>
+      <SharedCard>
+        {!sailingStats ? (
+          <Text style={styles.emptyText}>No GPS data for this session.</Text>
+        ) : sailingStats.windFromDeg == null ? (
+          <Text style={styles.emptyText}>💨 No wind data available</Text>
+        ) : (
+          <>
+            <Text style={styles.row}>
+              {sailingStats.windSource === 'gps_estimated'
+                ? `💨 GPS-derived (${sailingStats.wind.confidence} confidence): ${sailingStats.windFromDeg}°`
+                : `💨 Stored from session data: ${sailingStats.windFromDeg}°`}
+            </Text>
+            <Text style={styles.row}>
+              🔄 Tacks: {sailingStats.manoeuvres.tacks}  ·  Gybes: {sailingStats.manoeuvres.gybes}
+              {sailingStats.manoeuvres.uncategorised ? `  ·  Other turns: ${sailingStats.manoeuvres.uncategorised}` : ''}
+            </Text>
+            <Text style={styles.row}>
+              ⬆️ Best VMG upwind: {sailingStats.vmg.bestUpwindVMGKn != null ? `${sailingStats.vmg.bestUpwindVMGKn} kn` : '—'}
+              {'  '}(avg {sailingStats.vmg.avgUpwindVMGKn != null ? `${sailingStats.vmg.avgUpwindVMGKn} kn` : '—'})
+            </Text>
+            <Text style={styles.row}>
+              ⬇️ Best VMG downwind: {sailingStats.vmg.bestDownwindVMGKn != null ? `${sailingStats.vmg.bestDownwindVMGKn} kn` : '—'}
+              {'  '}(avg {sailingStats.vmg.avgDownwindVMGKn != null ? `${sailingStats.vmg.avgDownwindVMGKn} kn` : '—'})
+            </Text>
+            <Text style={styles.disclaimerText}>
+              ⚠️ {sailingStats.windSource === 'gps_estimated'
+                ? sailingStats.wind.disclaimer
+                : 'Wind direction from stored forecast data, not this session\'s GPS track.'}
+            </Text>
+          </>
+        )}
+      </SharedCard>
+
       <FeatureGate
         feature="COACHING_REPORT"
         onUpgradePress={() => navigation.navigate('Upgrade', { featureId: 'COACHING_REPORT' })}
@@ -147,6 +213,7 @@ const styles = StyleSheet.create({
     letterSpacing: 2, textTransform: 'uppercase', marginBottom: 8, marginTop: 16,
   },
   row: { color: colors.text, fontSize: 13, marginBottom: 4 },
+  disclaimerText: { color: '#f0a500', fontSize: 11, marginTop: 4 },
   peakMomentBtn: {
     backgroundColor: '#f0a500', paddingVertical: 12, borderRadius: 12,
     alignItems: 'center', marginTop: 14,

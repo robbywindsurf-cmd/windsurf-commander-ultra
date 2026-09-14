@@ -22,6 +22,7 @@ import SessionDetailScreen from './src/screens/SessionDetailScreen';
 import ImportDataScreen from './src/screens/ImportDataScreen';
 import PeakMomentScreen from './src/screens/PeakMomentScreen';
 import StatsScreen from './src/screens/StatsScreen';
+import SettingsScreen from './src/screens/SettingsScreen';
 import { colors } from './src/theme';
 
 const Tab = createBottomTabNavigator();
@@ -167,6 +168,7 @@ export default function App() {
           <Stack.Screen name="ImportData" component={ImportDataScreen} />
           <Stack.Screen name="PeakMoment" component={PeakMomentScreen} />
           <Stack.Screen name="Stats" component={StatsScreen} />
+          <Stack.Screen name="Settings" component={SettingsScreen} />
         </Stack.Navigator>
         <StatusBar style="light" />
       </NavigationContainer>

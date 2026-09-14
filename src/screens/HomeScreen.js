@@ -109,9 +109,14 @@ export default function HomeScreen({ navigation }) {
           <Text style={styles.greeting}>{greeting()} {nickname}</Text>
           <Text style={styles.dateText}>{todayLabel()}</Text>
         </View>
-        <TouchableOpacity activeOpacity={0.7} style={styles.tierBadge} onPress={() => navigation.navigate('Upgrade')}>
-          <Text style={styles.tierBadgeText}>{tier.toUpperCase()}</Text>
-        </TouchableOpacity>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+          <TouchableOpacity activeOpacity={0.7} style={styles.tierBadge} onPress={() => navigation.navigate('Upgrade')}>
+            <Text style={styles.tierBadgeText}>{tier.toUpperCase()}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity activeOpacity={0.7} style={styles.settingsBtn} onPress={() => navigation.navigate('Settings')} accessibilityLabel="Settings">
+            <Text style={styles.settingsBtnText}>⚙️</Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       <TouchableOpacity activeOpacity={0.7} style={styles.beachRow} onPress={() => setBeachPickerVisible(true)}>
@@ -277,6 +282,8 @@ const styles = StyleSheet.create({
   dateText: { color: 'rgba(205,232,240,0.5)', fontSize: 13, marginTop: 2 },
   tierBadge: { backgroundColor: colors.accent, borderRadius: 8, paddingVertical: 5, paddingHorizontal: 10 },
   tierBadgeText: { color: '#fff', fontSize: 11, fontWeight: '800', letterSpacing: 1 },
+  settingsBtn: { backgroundColor: 'rgba(255,255,255,0.08)', borderRadius: 8, width: 30, height: 30, alignItems: 'center', justifyContent: 'center' },
+  settingsBtnText: { fontSize: 15 },
 
   cardLabel: {
     color: 'rgba(205,232,240,0.6)', fontSize: 12, fontWeight: '700',

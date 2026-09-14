@@ -5,14 +5,18 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import {
-  View, Text, TouchableOpacity, StyleSheet,
+  View, Text, TouchableOpacity, StyleSheet, ScrollView,
   TouchableWithoutFeedback, Image,
 } from 'react-native';
 import { VideoView, useVideoPlayer } from 'expo-video';
 import * as ScreenOrientation from 'expo-screen-orientation';
-import { TierService, canAccess } from '@commandersuite/core';
+import { TierService, canAccess, AnalysisRepository, WeightRepository, ForceCalculator, describeFrontLeg, describeBackLeg, describeForwardLean } from '@commandersuite/core';
 import { analyseSessionVideo } from '../utils/poseAnalysisPipeline';
+import { videoUtcPlusSeconds } from '../utils/videoUtc';
 import { colors } from '../theme';
+
+// Matches the pipeline's frame-extraction width — see poseAnalysisPipeline.js.
+const FRAME_WIDTH = 960;
 
 async function unlockToPortrait() {
   try {
@@ -66,10 +70,18 @@ export default function ClipSelectorScreen({ route, navigation }) {
   const [analysisError, setAnalysisError]       = useState(null);
   const [currentFrame, setCurrentFrame]         = useState(null);
 
-  const [annotatedFrames, setAnnotatedFrames] = useState([]);
+  const [annotatedFrames, setAnnotatedFrames] = useState([]); // { image, timeS, leftKneeAngle, rightKneeAngle, backAngle, hipX }[]
   const [reviewIndex, setReviewIndex]         = useState(0);
   const [userTier, setUserTier]               = useState('free');
   const [summary, setSummary]                 = useState(null);
+  const [frameGps, setFrameGps]               = useState(null); // { speed_kn, hr } | null for the current reviewIndex
+  const [riderWeightKg, setRiderWeightKg]     = useState(null); // most recent weight_log entry, or null (ForceCalculator defaults to 75kg)
+
+  useEffect(() => {
+    WeightRepository.getAll()
+      .then((entries) => setRiderWeightKg(entries.length ? entries[entries.length - 1].weight_kg : null))
+      .catch(() => setRiderWeightKg(null));
+  }, []);
 
   useEffect(() => {
     TierService.getCachedTier().then(setUserTier);
@@ -166,11 +178,18 @@ export default function ClipSelectorScreen({ route, navigation }) {
           if (cancelRef.current) return;
           setAnalysisProgress({ current, total });
         },
-        onFrame: (annotatedFrame) => {
+        onFrame: (annotatedFrame, timeS, frameMeasurements) => {
           if (cancelRef.current || !canSeeSkeleton) return;
           if (annotatedFrame) {
             setCurrentFrame(annotatedFrame);
-            setAnnotatedFrames(prev => [...prev, annotatedFrame]);
+            setAnnotatedFrames(prev => [...prev, {
+              image: annotatedFrame,
+              timeS,
+              leftKneeAngle: frameMeasurements?.leftKneeAngle ?? null,
+              rightKneeAngle: frameMeasurements?.rightKneeAngle ?? null,
+              backAngle: frameMeasurements?.backAngle ?? null,
+              hipX: frameMeasurements?.hipX ?? null,
+            }]);
           }
         },
         onStatus: (msg) => {
@@ -199,6 +218,20 @@ export default function ClipSelectorScreen({ route, navigation }) {
     }
   }
 
+  useEffect(() => {
+    let cancelled = false;
+    const frame = annotatedFrames[reviewIndex];
+    const frameUtc = frame ? videoUtcPlusSeconds(videoStartUtc, frame.timeS) : null;
+    if (!frameUtc) {
+      setFrameGps(null);
+      return;
+    }
+    AnalysisRepository.correlateFrameToGPS(sessionId, frameUtc)
+      .then((row) => { if (!cancelled) setFrameGps(row || null); })
+      .catch(() => { if (!cancelled) setFrameGps(null); });
+    return () => { cancelled = true; };
+  }, [reviewIndex, annotatedFrames, sessionId, videoStartUtc]);
+
   async function goToSessionDetail() {
     await unlockToPortrait();
     navigation.navigate('SessionDetail', { sessionId });
@@ -218,6 +251,25 @@ export default function ClipSelectorScreen({ route, navigation }) {
   const progressPct = duration > 0 ? position / duration : 0;
   const startPct    = duration > 0 && startMs !== null ? startMs / duration : null;
 
+  // Only meaningful when this frame actually has detected keypoints (both
+  // knee angles present) — a frame where pose detection failed has nothing
+  // to estimate from.
+  const reviewFrame = annotatedFrames[reviewIndex];
+  const hasPose = reviewFrame && reviewFrame.leftKneeAngle != null && reviewFrame.rightKneeAngle != null;
+  const forceEstimate = hasPose
+    ? ForceCalculator.calculate({
+        leftKneeAngle: reviewFrame.leftKneeAngle,
+        rightKneeAngle: reviewFrame.rightKneeAngle,
+        hipX: reviewFrame.hipX,
+        frameWidth: FRAME_WIDTH,
+        riderWeightKg,
+        speedKn: frameGps?.speed_kn ?? 0,
+      })
+    : null;
+  const frontLegDesc = hasPose ? describeFrontLeg(reviewFrame.leftKneeAngle) : null;
+  const backLegDesc = hasPose ? describeBackLeg(reviewFrame.rightKneeAngle) : null;
+  const forwardLeanDesc = hasPose && reviewFrame.backAngle != null ? describeForwardLean(reviewFrame.backAngle) : null;
+
   return (
     <View style={styles.container}>
 
@@ -225,7 +277,7 @@ export default function ClipSelectorScreen({ route, navigation }) {
         <View style={styles.reviewArea}>
           {annotatedFrames[reviewIndex] ? (
             <Image
-              source={{ uri: 'data:image/jpeg;base64,' + annotatedFrames[reviewIndex] }}
+              source={{ uri: 'data:image/jpeg;base64,' + annotatedFrames[reviewIndex].image }}
               style={{ flex: 1 }}
               resizeMode="contain"
             />
@@ -234,9 +286,49 @@ export default function ClipSelectorScreen({ route, navigation }) {
               <Text style={{ color: TEXT }}>No frame</Text>
             </View>
           )}
+
+          {hasPose && (
+            <ScrollView style={styles.analysisRow} contentContainerStyle={styles.analysisRowContent}>
+              <View style={styles.analysisCard}>
+                <Text style={styles.analysisCardTitle}>FOOT PRESSURE (estimated)</Text>
+                <View style={styles.pressureBarRow}>
+                  <Text style={styles.pressureLabel}>Front</Text>
+                  <View style={styles.pressureBarTrack}>
+                    <View style={[styles.pressureBarFill, { width: `${forceEstimate.frontFootPct}%`, backgroundColor: SKY }]} />
+                  </View>
+                  <Text style={styles.pressureValue}>{forceEstimate.frontFootPct}%  {forceEstimate.frontFootKg}kg</Text>
+                </View>
+                <View style={styles.pressureBarRow}>
+                  <Text style={styles.pressureLabel}>Back</Text>
+                  <View style={styles.pressureBarTrack}>
+                    <View style={[styles.pressureBarFill, { width: `${forceEstimate.backFootPct}%`, backgroundColor: ACCENT }]} />
+                  </View>
+                  <Text style={styles.pressureValue}>{forceEstimate.backFootPct}%  {forceEstimate.backFootKg}kg</Text>
+                </View>
+                <Text style={styles.analysisLine}>Est. fin load: ~{forceEstimate.estimatedFinLoadKg}kg</Text>
+                <Text style={styles.analysisLine}>Speed factor: {forceEstimate.speedFactor}×</Text>
+                <Text style={styles.disclaimerText}>⚠️ {forceEstimate.disclaimer}</Text>
+              </View>
+
+              <View style={styles.analysisCard}>
+                <Text style={styles.analysisCardTitle}>BODY POSITION</Text>
+                <Text style={styles.analysisLine}>Front leg: {frontLegDesc ?? '—'}</Text>
+                <Text style={styles.analysisLine}>Back leg: {backLegDesc ?? '—'}</Text>
+                <Text style={styles.analysisLine}>Forward lean: {forwardLeanDesc ?? '—'}</Text>
+                <Text style={styles.analysisLine}>
+                  Speed: {frameGps?.speed_kn != null ? `${frameGps.speed_kn.toFixed(1)}kn (at this frame)` : '—'}
+                </Text>
+                <Text style={styles.analysisLine}>
+                  HR: {frameGps?.hr != null ? `${frameGps.hr}bpm (at this frame)` : '—'}
+                </Text>
+              </View>
+            </ScrollView>
+          )}
+
           <View style={styles.reviewControls}>
             <Text style={styles.reviewCounter}>
               Frame {reviewIndex + 1} / {annotatedFrames.length}
+              {frameGps ? `  ·  ${frameGps.speed_kn?.toFixed(1) ?? '—'} kn${frameGps.hr ? `  ·  ${frameGps.hr} bpm` : ''}` : ''}
             </Text>
             <View style={styles.reviewBtnRow}>
               <TouchableOpacity activeOpacity={0.7}
@@ -491,6 +583,24 @@ const styles = StyleSheet.create({
   upgradeBannerText: { color: ACCENT, fontSize: 13, textAlign: 'center', marginBottom: 10 },
   upgradeBannerBtn: { backgroundColor: ACCENT, paddingVertical: 8, paddingHorizontal: 20, borderRadius: 8 },
   upgradeBannerBtnText: { color: '#fff', fontWeight: '700', fontSize: 13 },
+  analysisRow: {
+    position: 'absolute', left: 0, right: 0, bottom: 90, maxHeight: '55%',
+  },
+  analysisRowContent: { padding: 10, gap: 10 },
+  analysisCard: {
+    backgroundColor: 'rgba(6,31,46,0.92)', borderRadius: 10, padding: 12,
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)',
+  },
+  analysisCardTitle: { color: TEXT, fontSize: 12, fontWeight: '700', marginBottom: 8, letterSpacing: 0.5 },
+  analysisLine: { color: TEXT, fontSize: 12, marginBottom: 4 },
+  disclaimerText: { color: ACCENT, fontSize: 11, marginTop: 6 },
+  pressureBarRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 6, gap: 8 },
+  pressureLabel: { color: TEXT, fontSize: 11, width: 40 },
+  pressureBarTrack: {
+    flex: 1, height: 10, borderRadius: 5, backgroundColor: 'rgba(255,255,255,0.12)', overflow: 'hidden',
+  },
+  pressureBarFill: { height: '100%', borderRadius: 5 },
+  pressureValue: { color: TEXT, fontSize: 11, width: 90, textAlign: 'right' },
   reviewControls: {
     position: 'absolute', bottom: 0, left: 0, right: 0,
     backgroundColor: 'rgba(6,31,46,0.9)', padding: 10,

@@ -8,6 +8,7 @@ import { AnalysisRepository, SessionRepository, CoachingService, UsageLimits } f
 import { extractFrames } from './frameExtraction';
 import { runPoseDetectionOnFrame } from './moveNet';
 import { analyseFrame } from './angleCalculations';
+import { videoUtcPlusSeconds } from './videoUtc';
 
 function avg(frameResults, key) {
   const vals = frameResults
@@ -73,16 +74,33 @@ export async function analyseSessionVideo({
     }
 
     const timeS = Math.round(frame.timeMs / 1000);
+    // Raw hip x position for ForceCalculator's front/back weight-split
+    // estimate — not part of the angle measurements, and not persisted to
+    // frame_data (no column for it), so it's threaded straight through the
+    // onFrame callback instead of round-tripping through the DB.
+    let hipX = null;
+    let measurements = null;
     if (!keypoints) {
       frameResults.push({ time_s: timeS, detected: false });
     } else {
-      const measurements = analyseFrame(keypoints, riderProfile);
+      measurements = analyseFrame(keypoints, riderProfile);
       frameResults.push({ time_s: timeS, detected: true, ...measurements });
       if (!firstDetectedFrame && annotatedFrame) firstDetectedFrame = annotatedFrame;
+
+      const lHip = keypoints[11];
+      const rHip = keypoints[12];
+      if (lHip && rHip && (lHip[2] === undefined || lHip[2] >= 0.3) && (rHip[2] === undefined || rHip[2] >= 0.3)) {
+        hipX = (lHip[0] + rHip[0]) / 2;
+      }
     }
 
     onProgress?.(i + 1, frames.length);
-    onFrame?.(annotatedFrame);
+    onFrame?.(annotatedFrame, timeS, measurements ? {
+      leftKneeAngle: measurements.left_knee_angle ?? null,
+      rightKneeAngle: measurements.right_knee_angle ?? null,
+      backAngle: measurements.back_angle_from_vertical ?? null,
+      hipX,
+    } : null);
   }
 
   const detectedCount = frameResults.filter((r) => r.detected).length;
@@ -95,7 +113,13 @@ export async function analyseSessionVideo({
   const framesForDb = frameResults.map((r) => ({
     detected: r.detected,
     time_s: r.time_s,
-    utc_timestamp: videoStartUtc ? null : null,
+    // Was always null regardless of videoStartUtc (`videoStartUtc ? null :
+    // null`) — nothing that correlates frames to trackpoints/GPS by time
+    // (AnalysisRepository.getNearestFrame, correlateFrameToGPS) could ever
+    // have matched anything against frame_data as a result. videoStartUtc
+    // itself is GPMF's basic-ISO "YYYYMMDDTHHMMSSZ" — see videoUtc.js for
+    // why that can't go straight into `new Date(...)`.
+    utc_timestamp: videoUtcPlusSeconds(videoStartUtc, r.time_s),
     left_knee_angle: r.left_knee_angle ?? null,
     right_knee_angle: r.right_knee_angle ?? null,
     back_angle: r.back_angle_from_vertical ?? null,
