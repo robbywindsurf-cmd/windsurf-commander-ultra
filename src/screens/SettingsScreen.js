@@ -4,7 +4,8 @@ import Header from '../components/Header';
 import SharedCard from '../components/SharedCard';
 import { WeatherBackfillService } from '../services/WeatherBackfillService';
 import { RameHeadWindService } from '../services/RameHeadWindService';
-import { AnalysisRepository, EmbeddingService, TierService, canAccess } from '@commandersuite/core';
+import { HrBackfillService } from '../services/HrBackfillService';
+import { AnalysisRepository, EmbeddingService, TierService, canAccess, LocalAI } from '@commandersuite/core';
 import { colors } from '../theme';
 
 const DEEP = colors.deep;
@@ -78,6 +79,34 @@ export default function SettingsScreen({ navigation }) {
     }
   }
 
+  const [hrMissingCount, setHrMissingCount] = useState(null);
+  const [hrRunning, setHrRunning] = useState(false);
+  const [hrProgress, setHrProgress] = useState({ completed: 0, total: 0 });
+  const [hrResult, setHrResult] = useState(null);
+  const [hrError, setHrError] = useState('');
+
+  useEffect(() => {
+    HrBackfillService.countMissing().then(setHrMissingCount).catch(() => {});
+  }, []);
+
+  async function runHrBackfill() {
+    setHrRunning(true);
+    setHrError('');
+    setHrResult(null);
+    setHrProgress({ completed: 0, total: 0 });
+    try {
+      const result = await HrBackfillService.backfillAllSessions((completed, total) =>
+        setHrProgress({ completed, total })
+      );
+      setHrResult(result);
+      setHrMissingCount(await HrBackfillService.countMissing());
+    } catch (e) {
+      setHrError(e.message || 'HR backfill failed');
+    } finally {
+      setHrRunning(false);
+    }
+  }
+
   const [tier, setTier] = useState(null);
   const [indexStatus, setIndexStatus] = useState(null); // { indexed, total, lastIndexedAt }
   const [indexing, setIndexing] = useState(false);
@@ -91,13 +120,26 @@ export default function SettingsScreen({ navigation }) {
     EmbeddingService.getIndexStatus().then(setIndexStatus).catch(() => {});
   }, []);
 
-  async function runIndexAllSessions() {
+  // rebuild=true clears every existing embedding first, so sessions that
+  // were already indexed (and would otherwise be skipped) get regenerated
+  // too — for when the embedded text itself changed (e.g. adding HR),
+  // making old rows stale rather than just incomplete.
+  async function runIndexAllSessions({ rebuild = false } = {}) {
     setIndexing(true);
     setIndexError('');
     setIndexResult(null);
     setIndexPhase('sessions');
     setIndexProgress({ completed: 0, total: 0 });
     try {
+      if (rebuild) await EmbeddingService.clearAll();
+
+      // Chat (LocalAI) and indexing (EmbeddingService) each open their own
+      // llama.cpp context — if Chat was used earlier this session, its
+      // context is still resident. Two live contexts competing for memory
+      // is a likely cause of a native "Failed to load model" mid-index, so
+      // free the chat one first; it reloads lazily next time it's needed.
+      await LocalAI.release();
+
       const sessionsResult = await EmbeddingService.embedAllSessions((completed, total) =>
         setIndexProgress({ completed, total })
       );
@@ -107,12 +149,24 @@ export default function SettingsScreen({ navigation }) {
       setIndexProgress({ completed: 0, total: notes.length });
       let notesIndexed = 0;
       for (let i = 0; i < notes.length; i++) {
-        const id = await EmbeddingService.embedCoachingNote(notes[i]);
-        if (id != null) notesIndexed += 1;
+        try {
+          const id = await EmbeddingService.embedCoachingNote(notes[i]);
+          if (id != null) notesIndexed += 1;
+        } catch (err) {
+          // One note failing to embed (e.g. the same native load issue
+          // that can hit embedAllSessions) shouldn't abort the rest.
+          console.warn('[Settings] coaching note embed failed:', err.message);
+        }
         setIndexProgress({ completed: i + 1, total: notes.length });
       }
 
       setIndexResult({ sessions: sessionsResult.embedded, notes: notesIndexed });
+      if (sessionsResult.failed > 0) {
+        setIndexError(
+          `${sessionsResult.failed} session${sessionsResult.failed === 1 ? '' : 's'} failed to embed` +
+          (sessionsResult.lastError ? `: ${sessionsResult.lastError}` : '')
+        );
+      }
       setIndexStatus(await EmbeddingService.getIndexStatus());
     } catch (e) {
       setIndexError(e.message || 'Indexing failed');
@@ -229,6 +283,60 @@ export default function SettingsScreen({ navigation }) {
         </SharedCard>
       )}
 
+      <Text style={styles.sectionLabel}>❤️ Heart Rate Backfill</Text>
+      <SharedCard style={styles.previewCard}>
+        {hrMissingCount == null ? (
+          <Text style={styles.previewName}>Checking sessions…</Text>
+        ) : (
+          <>
+            <Text style={styles.previewName}>
+              {hrMissingCount} session{hrMissingCount === 1 ? '' : 's'} missing HR data
+            </Text>
+            <Text style={styles.previewSize}>
+              Aggregates avg/max heart rate from imported GPS trackpoints — needed for the AI coach to reference HR (e.g. "HR vs speed")
+            </Text>
+          </>
+        )}
+      </SharedCard>
+
+      {!hrRunning && !hrResult && hrMissingCount > 0 && (
+        <TouchableOpacity activeOpacity={0.7} style={styles.importBtn} onPress={runHrBackfill}>
+          <Text style={styles.importBtnText}>❤️ Backfill Heart Rate</Text>
+        </TouchableOpacity>
+      )}
+
+      {hrRunning && (
+        <SharedCard style={styles.progressCard}>
+          <Text style={styles.progressLabel}>Aggregating trackpoint HR…</Text>
+          <View style={styles.progressTrack}>
+            <View
+              style={[
+                styles.progressFill,
+                { width: `${hrProgress.total ? Math.round((hrProgress.completed / hrProgress.total) * 100) : 0}%` },
+              ]}
+            />
+          </View>
+          <Text style={styles.progressCount}>
+            {hrProgress.completed} / {hrProgress.total} sessions
+          </Text>
+        </SharedCard>
+      )}
+
+      {!!hrError && <Text style={styles.errorText}>⚠️ {hrError}</Text>}
+
+      {hrResult && (
+        <SharedCard style={styles.resultCard}>
+          <View style={styles.resultCenter}>
+            <Text style={styles.resultIcon}>✅</Text>
+            <Text style={[styles.resultTitle, { color: SAFE }]}>
+              {hrResult.updated} session{hrResult.updated === 1 ? '' : 's'} updated
+            </Text>
+            <Text style={styles.resultSub}>{hrResult.skipped} skipped (no trackpoint HR data, or already set)</Text>
+            {hrResult.errors.length > 0 && <Text style={styles.resultSub}>{hrResult.errors.length} failed</Text>}
+          </View>
+        </SharedCard>
+      )}
+
       <Text style={styles.sectionLabel}>🧠 AI Semantic Search</Text>
       {tier === null ? (
         <SharedCard style={styles.previewCard}>
@@ -266,13 +374,23 @@ export default function SettingsScreen({ navigation }) {
 
           {!indexing && !indexResult && indexStatus && indexStatus.indexed < indexStatus.total && (
             <>
-              <TouchableOpacity activeOpacity={0.7} style={styles.importBtn} onPress={runIndexAllSessions}>
+              <TouchableOpacity activeOpacity={0.7} style={styles.importBtn} onPress={() => runIndexAllSessions()}>
                 <Text style={styles.importBtnText}>🧠 Index All Sessions</Text>
               </TouchableOpacity>
               <Text style={styles.estimateText}>
                 ~{(indexStatus.total - indexStatus.indexed) * 3} seconds estimated
               </Text>
             </>
+          )}
+
+          {!indexing && !indexResult && indexStatus && indexStatus.indexed > 0 && (
+            <TouchableOpacity
+              activeOpacity={0.7}
+              style={styles.viewImportBtn}
+              onPress={() => runIndexAllSessions({ rebuild: true })}
+            >
+              <Text style={styles.viewImportBtnText}>♻️ Rebuild Index (re-embed everything)</Text>
+            </TouchableOpacity>
           )}
 
           {indexing && (

@@ -3,13 +3,13 @@ import {
   ScrollView, Text, View, StyleSheet, TouchableOpacity, ActivityIndicator, Modal, FlatList,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { WeatherRepository, UserStore, TierService } from '@commandersuite/core';
 import Header from '../components/Header';
 import SharedCard from '../components/SharedCard';
 import { ALL_BEACHES, seedBeaches } from '../utils/seedBeaches';
-import { WeatherService, conditionIndicator, degreesToCompass } from '../services/WeatherService';
+import { WeatherService, fetchBeachWeather, conditionIndicator, degreesToCompass } from '../services/WeatherService';
 import { colors } from '../theme';
 
 const MAX_BEACHES = 5;
@@ -21,44 +21,6 @@ function compass(deg) {
   return COMPASS[Math.round(deg / 22.5) % 16];
 }
 
-async function fetchBeachWeather(beach) {
-  const wRes = await fetch(
-    `https://api.open-meteo.com/v1/forecast?latitude=${beach.lat}&longitude=${beach.lon}` +
-    `&hourly=windspeed_10m,winddirection_10m,temperature_2m&timezone=auto`
-  );
-  const wData = await wRes.json();
-
-  const mRes = await fetch(
-    `https://marine-api.open-meteo.com/v1/marine?latitude=${beach.lat}&longitude=${beach.lon}` +
-    `&hourly=wave_height,wind_wave_height,swell_wave_height&timezone=auto`
-  ).catch(() => null);
-  const mData = mRes ? await mRes.json().catch(() => null) : null;
-
-  const hours = wData.hourly?.time || [];
-  let bestIdx = 0, bestSpeed = -1;
-  for (let i = 0; i < hours.length; i++) {
-    const speed = wData.hourly.windspeed_10m[i];
-    if (speed > bestSpeed) { bestSpeed = speed; bestIdx = i; }
-  }
-
-  const bestWindKn = bestSpeed >= 0 ? Math.round(bestSpeed * 0.539957 * 10) / 10 : null;
-  const bestWindDir = wData.hourly?.winddirection_10m?.[bestIdx] ?? null;
-  const bestTime = hours[bestIdx] ? hours[bestIdx].slice(11, 16) : null;
-  const waveHeight = mData?.hourly?.wave_height?.[bestIdx] ?? null;
-  const temp = wData.hourly?.temperature_2m?.[bestIdx] ?? null;
-
-  return {
-    beach_name: beach.name,
-    forecast_date: new Date().toISOString().slice(0, 10),
-    best_wind_kn: bestWindKn,
-    best_wind_dir: bestWindDir,
-    best_time: bestTime,
-    wave_height_m: waveHeight,
-    temperature_c: temp,
-    forecast_json: { hours: hours.length },
-  };
-}
-
 function verdict(windKn) {
   if (windKn === null) return { label: '—', color: colors.text };
   if (windKn > 15) return { label: '✅ Go', color: colors.green };
@@ -66,7 +28,27 @@ function verdict(windKn) {
   return { label: '❌ Stay home', color: colors.danger };
 }
 
+function verdictSentence(windKn) {
+  if (windKn == null) return 'No forecast data for today yet.';
+  if (windKn > 15) return 'Great conditions today!';
+  if (windKn >= 10) return 'Marginal conditions today - check closer to your session.';
+  return 'Not ideal today - wind too light';
+}
+
+function parseHourlyForecast(weather) {
+  if (!weather?.forecast_json) return [];
+  try {
+    const parsed = typeof weather.forecast_json === 'string'
+      ? JSON.parse(weather.forecast_json)
+      : weather.forecast_json;
+    return parsed?.hourly || [];
+  } catch {
+    return [];
+  }
+}
+
 export default function WeatherScreen() {
+  const insets = useSafeAreaInsets();
   const [selectedNames, setSelectedNames] = useState([]);
   const [forecasts, setForecasts] = useState({});
   const [loading, setLoading] = useState(false);
@@ -122,6 +104,8 @@ export default function WeatherScreen() {
     }, [])
   );
 
+  const [detailRefreshing, setDetailRefreshing] = useState(false);
+
   async function openBeachDetail(check) {
     setSelectedCheck(check);
     setKitRec(null);
@@ -131,8 +115,32 @@ export default function WeatherScreen() {
         beach: check.beach, weather: check.weather, tideState: tideStateNow, tier,
       });
       setKitRec(rec);
+    } catch (err) {
+      // AI kit text can fail independently of the data-only fallback (e.g.
+      // model not downloaded yet) — fall back to the plain combo list
+      // rather than leaving the sheet on an uncaught rejection.
+      console.warn('[Weather] kit recommendation failed:', err.message);
+      setKitRec({ mode: 'data', combos: [], text: null });
     } finally {
       setKitRecLoading(false);
+    }
+  }
+
+  // Bypasses getBeachChecks()'s cache-first read — used when the cached
+  // row predates the hourly breakdown, or is otherwise stale, and the user
+  // wants today's forecast re-fetched right now rather than waiting for
+  // the date to roll over.
+  async function refreshBeachDetail() {
+    if (!selectedCheck) return;
+    setDetailRefreshing(true);
+    try {
+      const updated = await WeatherService.refreshBeachCheck(selectedCheck.beach);
+      setSelectedCheck(updated);
+      setBeachChecks((prev) => prev.map((c) => (c.beach.id === updated.beach.id ? updated : c)));
+    } catch (err) {
+      console.warn('[Weather] beach detail refresh failed:', err.message);
+    } finally {
+      setDetailRefreshing(false);
     }
   }
 
@@ -335,51 +343,107 @@ export default function WeatherScreen() {
         </SafeAreaView>
       </Modal>
 
-      <Modal statusBarTranslucent visible={!!selectedCheck} animationType="slide" transparent onRequestClose={() => setSelectedCheck(null)}>
-        <View style={styles.overlay}>
-          <View style={styles.detailSheet}>
-            {selectedCheck && (
-              <>
-                <Text style={styles.modalTitle}>{selectedCheck.beach.emoji || '📍'} {selectedCheck.beach.name}</Text>
+      <Modal statusBarTranslucent visible={!!selectedCheck} animationType="slide" onRequestClose={() => setSelectedCheck(null)}>
+        <View style={styles.detailPage}>
+          {selectedCheck && (
+            <>
+              <View style={[styles.detailHeaderBar, { paddingTop: insets.top + 8 }]}>
+                <TouchableOpacity
+                  activeOpacity={0.7}
+                  onPress={() => setSelectedCheck(null)}
+                  hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                  style={styles.detailBackBtnHit}
+                  accessibilityRole="button"
+                  accessibilityLabel="Back"
+                >
+                  <Text style={styles.detailBackBtn}>‹ Back</Text>
+                </TouchableOpacity>
+                <Text style={styles.detailHeaderTitle} numberOfLines={1}>{selectedCheck.beach.name}</Text>
+                <TouchableOpacity
+                  activeOpacity={0.7}
+                  onPress={refreshBeachDetail}
+                  disabled={detailRefreshing}
+                  hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                  style={styles.detailBackBtnHit}
+                  accessibilityRole="button"
+                  accessibilityLabel="Refresh forecast"
+                >
+                  {detailRefreshing ? (
+                    <ActivityIndicator color={colors.accent} size="small" />
+                  ) : (
+                    <Text style={[styles.detailBackBtn, { textAlign: 'right' }]}>🔄 Refresh</Text>
+                  )}
+                </TouchableOpacity>
+              </View>
+
+              <ScrollView contentContainerStyle={[styles.detailBody, { paddingBottom: insets.bottom + 24 }]}>
+                <Text style={styles.detailBeachName}>
+                  {selectedCheck.beach.emoji || '🏖️'} {selectedCheck.beach.name}
+                </Text>
+
                 {selectedCheck.weather ? (
                   <>
-                    <Text style={styles.line}>
-                      💨 {selectedCheck.weather.best_wind_kn ?? '—'}kn {compass(selectedCheck.weather.best_wind_dir)}
+                    <Text style={styles.detailLine}>
+                      🌊 <Text style={styles.detailLineLabel}>Tide:</Text>{' '}
+                      {tideStateNow?.value_m != null ? `${tideStateNow.value_m}m — ` : ''}
+                      {tideStateNow?.value_m != null ? (
+                        <Text style={{ color: colors.green, fontWeight: '700' }}>✅ SAFE</Text>
+                      ) : (
+                        <Text style={{ color: 'rgba(205,232,240,0.4)' }}>No tide data</Text>
+                      )}
                     </Text>
-                    <Text style={styles.line}>
-                      🌊 {selectedCheck.weather.wave_height_m != null ? `${selectedCheck.weather.wave_height_m}m` : '—'}
+                    <Text style={styles.detailLine}>
+                      💨 <Text style={styles.detailLineLabel}>Best wind:</Text>{' '}
+                      {selectedCheck.weather.best_wind_kn ?? '—'}kn {compass(selectedCheck.weather.best_wind_dir)}
+                      {selectedCheck.weather.best_wind_dir != null ? ` (${Math.round(selectedCheck.weather.best_wind_dir)}°)` : ''}
+                      {selectedCheck.weather.best_time ? ` at ${selectedCheck.weather.best_time}` : ''}
                     </Text>
-                    <Text style={styles.line}>
-                      🌡️ {selectedCheck.weather.temperature_c != null ? `${selectedCheck.weather.temperature_c}°C` : '—'}
+                    <Text style={styles.detailLine}>
+                      🌡️ <Text style={styles.detailLineLabel}>Temp:</Text>{' '}
+                      {selectedCheck.weather.temperature_c != null ? `${selectedCheck.weather.temperature_c}°C` : '—'}
                     </Text>
-                    {tideStateNow && <Text style={styles.line}>🌊 Tide: {tideStateNow.description}</Text>}
+                    <Text style={styles.detailLine}>
+                      🏄 <Text style={styles.detailLineLabel}>Gear:</Text>{' '}
+                      {kitRecLoading
+                        ? '…'
+                        : kitRec?.combos?.length
+                        ? kitRec.combos.map((c) => c.name || [c.board_name, c.sail_name].filter(Boolean).join(' / ')).join(' + ')
+                        : 'No matching gear logged'}
+                    </Text>
+
+                    <Text style={styles.detailSectionLabel}>Hourly forecast:</Text>
+                    <View style={styles.hourlyBox}>
+                      {parseHourlyForecast(selectedCheck.weather).length ? (
+                        parseHourlyForecast(selectedCheck.weather).map((h) => (
+                          <Text key={h.time} style={styles.hourlyLine}>
+                            {h.time} | {h.wind_kn ?? '—'}kn | {compass(h.wind_dir)} ({h.wind_dir != null ? Math.round(h.wind_dir) : '—'}°)
+                          </Text>
+                        ))
+                      ) : (
+                        <Text style={styles.hourlyLine}>No hourly breakdown cached — pull to refresh.</Text>
+                      )}
+                    </View>
+
+                    {kitRec?.mode === 'ai' && kitRec.text && (
+                      <>
+                        <Text style={styles.detailSectionLabel}>AI Kit Recommendation:</Text>
+                        <Text style={styles.detailLine}>{kitRec.text}</Text>
+                      </>
+                    )}
+
+                    <Text style={styles.detailVerdict}>
+                      <Text style={styles.detailLineLabel}>Verdict:</Text> {verdictSentence(selectedCheck.weather.best_wind_kn)}
+                    </Text>
+                    {selectedCheck.weather.best_time && (
+                      <Text style={styles.detailUpdated}>(Last updated: {selectedCheck.weather.best_time})</Text>
+                    )}
                   </>
                 ) : (
-                  <Text style={styles.line}>No cached weather for today</Text>
+                  <Text style={styles.detailLine}>No cached weather for today</Text>
                 )}
-
-                <Text style={[styles.sectionLabel, { marginTop: 14 }]}>Kit Recommendation</Text>
-                {kitRecLoading ? (
-                  <ActivityIndicator color={colors.accent} />
-                ) : kitRec?.mode === 'ai' && kitRec.text ? (
-                  <Text style={styles.line}>{kitRec.text}</Text>
-                ) : kitRec?.combos?.length ? (
-                  kitRec.combos.map((c) => (
-                    <Text key={c.id} style={styles.line}>
-                      • {c.name || [c.board_name, c.sail_name].filter(Boolean).join(' / ')}
-                      {c.wind_min_kn != null ? ` (${c.wind_min_kn}-${c.wind_max_kn ?? '?'}kn)` : ''}
-                    </Text>
-                  ))
-                ) : (
-                  <Text style={styles.line}>No matching gear combos logged for these conditions.</Text>
-                )}
-
-                <TouchableOpacity activeOpacity={0.7} style={styles.modalCloseBtn} onPress={() => setSelectedCheck(null)}>
-                  <Text style={styles.modalCloseBtnText}>Close</Text>
-                </TouchableOpacity>
-              </>
-            )}
-          </View>
+              </ScrollView>
+            </>
+          )}
         </View>
       </Modal>
 
@@ -441,6 +505,31 @@ const styles = StyleSheet.create({
     backgroundColor: colors.accent,
   },
   modalSaveBtnText: { color: '#fff', fontSize: 15, fontWeight: '700' },
+
+  detailPage: { flex: 1, backgroundColor: colors.deep },
+  detailHeaderBar: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 16, paddingBottom: 12,
+    borderBottomWidth: 1, borderBottomColor: 'rgba(26,138,181,0.2)',
+  },
+  // 44x44pt minimum hit target per Apple's Human Interface Guidelines —
+  // the label itself is much smaller, so hitSlop alone isn't enough once
+  // it's sitting right under the status bar/notch.
+  detailBackBtnHit: { minWidth: 50, minHeight: 44, justifyContent: 'center' },
+  detailBackBtn: { color: colors.accent, fontSize: 16 },
+  detailHeaderTitle: { flex: 1, color: '#fff', fontSize: 16, fontWeight: '700', textAlign: 'center' },
+  detailBody: { padding: 20 },
+  detailBeachName: { color: colors.accent, fontSize: 18, fontWeight: '700', marginBottom: 16 },
+  detailLine: { color: colors.text, fontSize: 15, marginBottom: 10, lineHeight: 21 },
+  detailLineLabel: { fontWeight: '700' },
+  detailSectionLabel: { color: colors.accent, fontSize: 15, fontWeight: '700', marginTop: 14, marginBottom: 8 },
+  hourlyBox: {
+    borderWidth: 1, borderColor: 'rgba(26,138,181,0.25)', borderRadius: 12,
+    padding: 14,
+  },
+  hourlyLine: { color: colors.text, fontSize: 13, marginBottom: 6, fontVariant: ['tabular-nums'] },
+  detailVerdict: { color: colors.text, fontSize: 15, marginTop: 16 },
+  detailUpdated: { color: 'rgba(205,232,240,0.5)', fontSize: 13, fontStyle: 'italic', marginTop: 8 },
 
   beachRow: {
     flexDirection: 'row', alignItems: 'center', paddingVertical: 12,

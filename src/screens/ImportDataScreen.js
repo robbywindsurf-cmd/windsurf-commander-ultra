@@ -5,7 +5,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import Papa from 'papaparse';
 import Header from '../components/Header';
 import SharedCard from '../components/SharedCard';
-import { SessionRepository, EquipmentRepository, TrackpointRepository, WeatherRepository, TideRepository, EmbeddingService, TierService, canAccess } from '@commandersuite/core';
+import { SessionRepository, EquipmentRepository, TrackpointRepository, WeatherRepository, TideRepository, WeightRepository, EmbeddingService, TierService, canAccess } from '@commandersuite/core';
 
 // Trackpoint CSV files run to hundreds of thousands of rows / tens of MB —
 // never load the whole thing into memory. Read fixed-size byte windows,
@@ -116,10 +116,27 @@ function toNumberOrNull(value) {
 // Finds an equipment row by type + name + size within an already-fetched
 // list, inserting (and appending to the list) if it doesn't exist yet —
 // avoids re-querying getAll() for every CSV row.
+// Matches on (type, name, brand) only — not size. Size varies row-to-row
+// in the historical CSV (present on some session rows for a board, blank
+// on others), and matching on it too meant the same physical board spawned
+// a fresh "duplicate" equipment row every time size differed, including
+// every time it was simply missing. If an existing match is missing size
+// and this row has one, fill it in rather than leaving it incomplete.
 async function findOrCreateEquipment(cache, type, name, brand, size) {
   if (!name) return null;
-  const existing = cache.find((e) => e.type === type && e.name === name && (e.size || null) === (size || null));
-  if (existing) return existing.id;
+  const existing = cache.find(
+    (e) => e.type === type && e.name === name && (e.brand || null) === (brand || null)
+  );
+  if (existing) {
+    if (!existing.size && size) {
+      // update() replaces the whole row, not a partial patch — merge onto
+      // the existing record rather than passing { size } alone, or every
+      // other column (name/brand/year/notes/volume_l/...) gets wiped.
+      await EquipmentRepository.update(existing.id, { ...existing, size });
+      existing.size = size;
+    }
+    return existing.id;
+  }
 
   const result = await EquipmentRepository.insert({ type, name, brand: brand || null, size: size || null });
   const id = result.lastInsertRowId;
@@ -220,20 +237,183 @@ async function importTidePredictionsRows(rows) {
   return mapped.length;
 }
 
+// Returns { count, minDate, maxDate } rather than a plain row count, so the
+// UI can show "58 weight readings imported (2017-2026)" instead of a bare
+// number — the date range is what actually tells you whether the import
+// covered the years you expected.
+async function importWeightLogRows(rows) {
+  const mapped = rows
+    .filter((r) => r.recorded_date && toNumberOrNull(r.weight_kg) != null)
+    .map((r) => ({
+      logged_at: r.recorded_date,
+      weight_kg: toNumberOrNull(r.weight_kg),
+      notes: r.notes || null,
+    }));
+  const count = await WeightRepository.insertBatch(mapped);
+
+  const dates = mapped.map((r) => r.logged_at).sort();
+  return {
+    count,
+    minDate: dates[0]?.slice(0, 4) ?? null,
+    maxDate: dates[dates.length - 1]?.slice(0, 4) ?? null,
+  };
+}
+
+function parseCsvBool(value) {
+  const v = (value ?? '').toString().trim().toLowerCase();
+  return v === 'true' || v === 't' || v === '1' || v === 'yes';
+}
+
+// Wipes gear_combos + equipment and rebuilds equipment (boards/sails/fins)
+// from the Oracle export. gear_combos is cleared here too, not just in
+// importGearCombosRows, since its board_id/sail_id/fin_id would otherwise
+// dangle once the equipment rows they point at are deleted.
+//
+// Column notes (mapped onto the real equipment schema, not 1:1 onto the
+// CSV headers — there's no `length`/`box` column, so those fold into
+// `notes` rather than being invented as new, otherwise-unused columns):
+//  - size: boards store it as volume_l (numeric, litres — matches
+//    GarageScreen's "120L" display); sails/fins keep it in the generic
+//    `size` text column ("7.5", "28").
+//  - design: for fins this *is* fin_type (the column's exact purpose —
+//    "Wave"/"Freeride"/etc); for sails there's no equivalent column, so it
+//    goes into notes instead.
+//  - box (fin box type, e.g. "Powerbox") and board length have no column
+//    of their own — appended to notes.
+async function importEquipmentRows(rows) {
+  await EquipmentRepository.deleteAllGearCombos();
+  await EquipmentRepository.deleteAllEquipment();
+
+  const counts = { board: 0, sail: 0, fin: 0 };
+
+  for (const row of rows) {
+    const type = (row.type || '').trim().toLowerCase();
+    if (!['board', 'sail', 'fin'].includes(type) || !row.name) continue;
+
+    const lengthCm = toNumberOrNull(row.length);
+    const widthCm = toNumberOrNull(row.width);
+    const year = toNumberOrNull(row.year);
+    const sizeNum = toNumberOrNull(row.size);
+
+    const notesParts = [];
+    let finType = null;
+    if (type === 'fin') {
+      finType = row.design || null;
+      if (row.box) notesParts.push(`Box: ${row.box}`);
+    } else if (type === 'sail' && row.design) {
+      notesParts.push(row.design);
+    }
+    if (type === 'board' && lengthCm != null) {
+      notesParts.push(`Length: ${lengthCm}cm`);
+    }
+
+    await EquipmentRepository.insert({
+      type,
+      name: row.name,
+      brand: row.brand || null,
+      size: type === 'board' ? null : (row.size || null),
+      year: type === 'board' ? year : null,
+      notes: notesParts.length ? notesParts.join(' · ') : null,
+      volume_l: type === 'board' ? sizeNum : null,
+      width_cm: type === 'board' ? widthCm : null,
+      fin_type: finType,
+      active: parseCsvBool(row.active) ? 1 : 0,
+    });
+    counts[type] += 1;
+  }
+
+  return counts;
+}
+
+// "Fox 120L" (combos.csv's board column) → { name: "Fox", volume: 120 }.
+function parseComboBoardField(value) {
+  const trimmed = (value || '').trim();
+  const m = /^(.*?)\s+(\d+(?:\.\d+)?)\s*L$/i.exec(trimmed);
+  if (!m) return { name: trimmed, volume: null };
+  return { name: m[1].trim(), volume: Number(m[2]) };
+}
+
+// Resolves each row's board/sail names (from the already-imported
+// equipment) into gear_combos rows. Must run after importEquipmentRows —
+// looks up the *current* equipment table rather than trusting ids, since
+// combos.csv only carries names/sizes, not equipment ids. No fin column in
+// this CSV, so fin_id is always left null.
+async function importGearCombosRows(rows) {
+  await EquipmentRepository.deleteAllGearCombos();
+
+  const [boards, sails] = await Promise.all([
+    EquipmentRepository.getAll('board', { includeInactive: true }),
+    EquipmentRepository.getAll('sail', { includeInactive: true }),
+  ]);
+
+  let imported = 0;
+  let skipped = 0;
+
+  for (const row of rows) {
+    const { name: boardName, volume } = parseComboBoardField(row.board);
+    const board = boards.find(
+      (b) => b.name === boardName && (volume == null || b.volume_l == null || Math.abs(b.volume_l - volume) < 0.5)
+    );
+    const sailName = (row.sail || '').trim();
+    const sail = sails.find(
+      (s) => s.name === sailName && (!row.sail_size || String(s.size) === String(row.sail_size).trim())
+    );
+
+    if (!board || !sail) {
+      skipped += 1;
+      continue;
+    }
+
+    const conditions = (row.conditions || '')
+      .split('|')
+      .map((c) => c.trim())
+      .filter(Boolean)
+      .join(' | ');
+
+    const name = [
+      [board.brand, board.name].filter(Boolean).join(' '),
+      [sail.brand, sail.name, row.sail_size ? row.sail_size + 'm²' : null].filter(Boolean).join(' '),
+    ].join(' / ');
+
+    await EquipmentRepository.insertGearCombo({
+      name,
+      board_id: board.id,
+      sail_id: sail.id,
+      fin_id: null,
+      notes: row.notes || null,
+      category: conditions || null,
+      wind_min_kn: toNumberOrNull(row.min_wind),
+      wind_max_kn: toNumberOrNull(row.max_wind),
+      wave_min_m: toNumberOrNull(row.min_waves),
+      wave_max_m: toNumberOrNull(row.max_waves),
+    });
+    imported += 1;
+  }
+
+  // Stale from before this reimport (different gear_combo_id values, and
+  // possibly a different text shape now that brand is included) — RAG's
+  // semantic search won't reflect the new equipment until these are
+  // regenerated.
+  await EmbeddingService.clearAll();
+  await EmbeddingService.embedAllSessions();
+
+  return { imported, skipped };
+}
+
 // Shared UI for the three small, fully-in-memory CSV imports (weather
 // history, tide readings, tide predictions) — picks a file, parses it in
 // one shot with papaparse, hands the rows to `onImport`, and shows the
 // resulting row count.
-function SimpleCsvImportSection({ title, icon, hint, buttonLabel, onImport }) {
+function SimpleCsvImportSection({ title, icon, hint, buttonLabel, onImport, formatResult }) {
   const [file, setFile] = useState(null);
   const [busy, setBusy] = useState(false);
-  const [importedCount, setImportedCount] = useState(null);
+  const [result, setResult] = useState(null);
   const [errorMsg, setErrorMsg] = useState('');
 
   async function pick() {
     try {
       setErrorMsg('');
-      setImportedCount(null);
+      setResult(null);
       const picked = await DocumentPicker.getDocumentAsync({
         type: ['text/csv', 'text/comma-separated-values', 'public.comma-separated-values-text', '*/*'],
         copyToCacheDirectory: true,
@@ -254,15 +434,14 @@ function SimpleCsvImportSection({ title, icon, hint, buttonLabel, onImport }) {
     if (!file) return;
     setBusy(true);
     setErrorMsg('');
-    setImportedCount(null);
+    setResult(null);
     try {
       const csvText = await FileSystem.readAsStringAsync(file.uri);
       const parsed = Papa.parse(csvText, { header: true, skipEmptyLines: true });
       if (parsed.errors && parsed.errors.length > 0) {
         throw new Error(parsed.errors[0].message);
       }
-      const count = await onImport(parsed.data);
-      setImportedCount(count);
+      setResult(await onImport(parsed.data));
     } catch (e) {
       setErrorMsg(e.message || 'Import failed');
     } finally {
@@ -292,7 +471,7 @@ function SimpleCsvImportSection({ title, icon, hint, buttonLabel, onImport }) {
         </SharedCard>
       )}
 
-      {file && importedCount == null && (
+      {file && result == null && (
         <TouchableOpacity activeOpacity={0.7} style={[styles.importBtn, busy && styles.importBtnDisabled]} onPress={runImport} disabled={busy}>
           {busy && <ActivityIndicator color="#fff" size="small" style={{ marginRight: 8 }} />}
           <Text style={styles.importBtnText}>{busy ? 'Importing...' : buttonLabel}</Text>
@@ -301,12 +480,12 @@ function SimpleCsvImportSection({ title, icon, hint, buttonLabel, onImport }) {
 
       {!!errorMsg && <Text style={styles.errorText}>⚠️ {errorMsg}</Text>}
 
-      {importedCount != null && (
+      {result != null && (
         <SharedCard style={styles.resultCard}>
           <View style={styles.resultCenter}>
             <Text style={styles.resultIcon}>✅</Text>
             <Text style={[styles.resultTitle, { color: SAFE }]}>
-              {importedCount.toLocaleString()} row{importedCount === 1 ? '' : 's'} imported
+              {formatResult ? formatResult(result) : `${result.toLocaleString()} row${result === 1 ? '' : 's'} imported`}
             </Text>
           </View>
         </SharedCard>
@@ -700,6 +879,51 @@ export default function ImportDataScreen({ navigation }) {
         hint="station_id, prediction_time, value_m, tide_type, forecast_date"
         buttonLabel="📥 Import Tide Predictions"
         onImport={importTidePredictionsRows}
+      />
+
+      <SimpleCsvImportSection
+        title="Weight Data"
+        icon="⚖️"
+        hint="recorded_date, weight_kg, notes"
+        buttonLabel="📥 Import Weight Data"
+        onImport={importWeightLogRows}
+        formatResult={({ count, minDate, maxDate }) =>
+          `${count.toLocaleString()} weight reading${count === 1 ? '' : 's'} imported${
+            minDate && maxDate ? ` (${minDate}-${maxDate})` : ''
+          }`
+        }
+      />
+
+      <SimpleCsvImportSection
+        title="Equipment (clears existing Garage first)"
+        icon="🎒"
+        hint="type, brand, name, size, length, width, year, active, design, box"
+        buttonLabel="📥 Import Equipment from CSV"
+        onImport={async (rows) => {
+          const counts = await importEquipmentRows(rows);
+          console.log('[Import] Boards:', counts.board);
+          console.log('[Import] Sails:', counts.sail);
+          console.log('[Import] Fins:', counts.fin);
+          return counts;
+        }}
+        formatResult={(counts) =>
+          `${counts.board} board${counts.board === 1 ? '' : 's'}, ${counts.sail} sail${counts.sail === 1 ? '' : 's'}, ${counts.fin} fin${counts.fin === 1 ? '' : 's'} imported`
+        }
+      />
+
+      <SimpleCsvImportSection
+        title="Gear Combos (import Equipment CSV first)"
+        icon="🧩"
+        hint="board, sail, sail_size, min_wind, max_wind, min_waves, max_waves, conditions, notes, active"
+        buttonLabel="📥 Import Gear Combos from CSV"
+        onImport={async (rows) => {
+          const result = await importGearCombosRows(rows);
+          console.log('[Import] Combos:', result.imported);
+          return result;
+        }}
+        formatResult={({ imported, skipped }) =>
+          `${imported} combo${imported === 1 ? '' : 's'} imported` + (skipped > 0 ? `, ${skipped} skipped (board/sail not found)` : '')
+        }
       />
     </ScrollView>
   );
