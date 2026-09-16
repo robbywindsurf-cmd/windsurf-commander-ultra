@@ -5,9 +5,10 @@ import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { getDb, UserStore, TierService, EmbeddingService } from '@commandersuite/core';
+import { getDb, UserStore, TierService, EmbeddingService, WeatherRepository } from '@commandersuite/core';
 import { seedEquipment } from './src/utils/seedEquipment';
 import { seedBeaches } from './src/utils/seedBeaches';
+import { fetchBeachWeather, isWeatherStale } from './src/services/WeatherService';
 import FavouriteBeachPicker from './src/components/FavouriteBeachPicker';
 
 import HomeScreen from './src/screens/HomeScreen';
@@ -123,6 +124,26 @@ export default function App() {
             EmbeddingService.embedAllSessions().catch((err) => {
               console.warn('[App] background embedding failed:', err.message);
             });
+          });
+        }
+
+        // Warms weather_cache for the favourite beach before Weather (or
+        // Chat, which grounds its prompt in today's cached weather) is ever
+        // opened — non-blocking, and skipped entirely if today's cache is
+        // already fresh (WeatherScreen re-checks staleness itself on open).
+        if (favourite) {
+          InteractionManager.runAfterInteractions(async () => {
+            try {
+              const today = new Date().toISOString().slice(0, 10);
+              const cached = await WeatherRepository.getForBeach(favourite.name, today);
+              if (!cached || isWeatherStale(cached)) {
+                const forecast = await fetchBeachWeather(favourite);
+                await WeatherRepository.cache(forecast);
+                console.log('[App] Weather cached for today');
+              }
+            } catch (err) {
+              console.warn('[App] background weather fetch failed:', err.message);
+            }
           });
         }
       })

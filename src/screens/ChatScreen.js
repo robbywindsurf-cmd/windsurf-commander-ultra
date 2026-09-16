@@ -11,12 +11,19 @@ import {
 } from 'react-native';
 import Markdown from 'react-native-markdown-display';
 import { useFocusEffect } from '@react-navigation/native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
-  TierService, CoachingService, ModelManager,
+  TierService, CoachingService, ModelManager, UserStore,
   SessionRepository, AnalysisRepository, WeatherRepository, EquipmentRepository,
 } from '@commandersuite/core';
 import Header from '../components/Header';
+import { fetchBeachWeather, isWeatherStale } from '../services/WeatherService';
+import { ALL_BEACHES } from '../utils/seedBeaches';
 import { colors } from '../theme';
+
+// Same key WeatherScreen stores the picker selection under — Chat reads
+// the rider's actual tracked-beach list rather than keeping its own copy.
+const WEATHER_SELECTION_KEY = 'ws_selected_beach_names';
 
 const SUGGESTED_QUESTIONS = [
   { emoji: '🏆', label: 'What is my real personal best?', question: 'What is my real personal best?' },
@@ -105,14 +112,56 @@ export default function ChatScreen({ navigation, route }) {
     }
   }, [messages]);
 
+  // Weather is normally already cached by the time Chat is opened (App.js
+  // warms the favourite beach in the background on launch, WeatherScreen
+  // refreshes on focus) — but if Chat is the very first screen touched
+  // this session, or a cached row has gone stale, weather_cache can be
+  // genuinely empty/outdated for some beaches. Rather than have the AI say
+  // "no weather data" in that case, fetch it live before answering.
+  //
+  // Covers every beach the rider actually tracks (their WeatherScreen
+  // picker selection, plus favourite) — not just one. Deliberately never
+  // uses WeatherRepository.getAllToday(): that returns whichever cached
+  // beach happens to have the highest wind today across the *whole*
+  // table, which silently fed the AI a different beach's conditions
+  // whenever it was windier than anywhere the rider actually goes.
   async function buildContext() {
-    const [recentSessions, lastAnalysis, weatherRows, equipment] = await Promise.all([
+    let [recentSessions, lastAnalysis, equipment] = await Promise.all([
       SessionRepository.getRecentSessions(3),
       AnalysisRepository.getLatestAnalysis(),
-      WeatherRepository.getAllToday(),
       EquipmentRepository.getAll(),
     ]);
-    return { recentSessions, lastAnalysis, weather: weatherRows?.[0] || null, equipment };
+
+    const [storedNames, favouriteBeach] = await Promise.all([
+      AsyncStorage.getItem(WEATHER_SELECTION_KEY),
+      UserStore.getFavouriteBeach(),
+    ]);
+    const trackedNames = new Set(storedNames ? JSON.parse(storedNames) : []);
+    if (favouriteBeach) trackedNames.add(favouriteBeach.name);
+
+    const today = new Date().toISOString().slice(0, 10);
+    const weather = [];
+    for (const name of trackedNames) {
+      const beach = ALL_BEACHES.find((b) => b.name === name);
+      if (!beach) continue;
+
+      let row = await WeatherRepository.getForBeach(beach.name, today);
+      if (!row || isWeatherStale(row)) {
+        console.log(!row ? `[Chat] No weather cached for ${beach.name} — fetching...` : `[Chat] Cached weather stale for ${beach.name} — fetching...`);
+        try {
+          row = await fetchBeachWeather(beach);
+          await WeatherRepository.cache(row);
+        } catch (err) {
+          console.warn('[Chat] live weather fetch failed for', beach.name, err.message);
+          // Keep whatever stale row exists rather than dropping the beach
+          // entirely — some grounding beats none.
+        }
+      }
+      if (row) weather.push(row);
+    }
+    console.log('[Chat] weather for prompt:', JSON.stringify(weather)?.slice(0, 400));
+
+    return { recentSessions, lastAnalysis, weather, equipment };
   }
 
   const send = async (msgText) => {

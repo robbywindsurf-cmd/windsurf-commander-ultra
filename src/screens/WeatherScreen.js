@@ -9,7 +9,7 @@ import { WeatherRepository, UserStore, TierService } from '@commandersuite/core'
 import Header from '../components/Header';
 import SharedCard from '../components/SharedCard';
 import { ALL_BEACHES, seedBeaches } from '../utils/seedBeaches';
-import { WeatherService, fetchBeachWeather, conditionIndicator, degreesToCompass } from '../services/WeatherService';
+import { WeatherService, fetchBeachWeather, isWeatherStale, conditionIndicator, degreesToCompass } from '../services/WeatherService';
 import { colors } from '../theme';
 
 const MAX_BEACHES = 5;
@@ -33,6 +33,21 @@ function verdictSentence(windKn) {
   if (windKn > 15) return 'Great conditions today!';
   if (windKn >= 10) return 'Marginal conditions today - check closer to your session.';
   return 'Not ideal today - wind too light';
+}
+
+function formatRelativeTime(date) {
+  if (!date) return null;
+  const minutes = Math.floor((Date.now() - date.getTime()) / 60000);
+  if (minutes < 1) return 'Updated just now';
+  if (minutes < 60) return `Updated ${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  return `Updated ${hours}h ago`;
+}
+
+async function fetchAndCacheWeather(beach) {
+  const forecast = await fetchBeachWeather(beach);
+  await WeatherRepository.cache(forecast);
+  return forecast;
 }
 
 function parseHourlyForecast(weather) {
@@ -70,6 +85,9 @@ export default function WeatherScreen() {
   const [briefingText, setBriefingText] = useState('');
   const [briefingLoading, setBriefingLoading] = useState(false);
 
+  const [lastRefreshedAt, setLastRefreshedAt] = useState(null);
+  const [refreshingAll, setRefreshingAll] = useState(false);
+
   useFocusEffect(
     useCallback(() => {
       let cancelled = false;
@@ -87,10 +105,27 @@ export default function WeatherScreen() {
         setFavouriteBeach(favourite);
         setTier(cachedTier);
         setTideStateNow(tideState);
+
+        // Favourite beach jumps the queue — it's what most of this screen
+        // (5-day forecast, briefing) is built around, so it shouldn't have
+        // to wait behind every other selected/catalogue beach's fetch.
+        if (favourite) {
+          const todayStr = new Date().toISOString().slice(0, 10);
+          const cached = await WeatherRepository.getForBeach(favourite.name, todayStr);
+          if (!cached) {
+            console.log('[Weather] No cache for today — fetching...');
+            await fetchAndCacheWeather(favourite).catch((err) => console.warn('[Weather] favourite beach fetch failed:', err.message));
+          } else if (isWeatherStale(cached)) {
+            console.log('[Weather] Cache stale — refreshing...');
+            await fetchAndCacheWeather(favourite).catch((err) => console.warn('[Weather] favourite beach refresh failed:', err.message));
+          }
+        }
+
         await loadForecasts(names, { forceRefresh: false });
 
         const checks = await WeatherService.getBeachChecks();
         if (!cancelled) setBeachChecks(checks);
+        if (!cancelled) setLastRefreshedAt(new Date());
 
         if (favourite) {
           setForecast5Loading(true);
@@ -103,6 +138,23 @@ export default function WeatherScreen() {
       return () => { cancelled = true; };
     }, [])
   );
+
+  // Force-fetches every beach the user actually tracks (favourite + the
+  // picker selection) — not the whole ALL_BEACHES catalogue, which
+  // getBeachChecks() already keeps reasonably fresh in the background.
+  async function refreshAllWeather() {
+    setRefreshingAll(true);
+    try {
+      const names = new Set(selectedNames);
+      if (favouriteBeach) names.add(favouriteBeach.name);
+      await loadForecasts([...names], { forceRefresh: true });
+      const checks = await WeatherService.getBeachChecks();
+      setBeachChecks(checks);
+      setLastRefreshedAt(new Date());
+    } finally {
+      setRefreshingAll(false);
+    }
+  }
 
   const [detailRefreshing, setDetailRefreshing] = useState(false);
 
@@ -164,9 +216,10 @@ export default function WeatherScreen() {
     }
   }
 
-  // Cache-first: only hits the network for a beach if there's no cached
-  // forecast for today yet, so simply reopening this screen doesn't refetch
-  // the same place over and over. Pass forceRefresh to bypass the cache.
+  // Cache-first, but not cache-forever: skips the network only when a
+  // beach has a today-dated row that's also still fresh (< 6h old) — a row
+  // fetched at 06:00 is still "today's" at 18:00 but the wind picture has
+  // moved on. Pass forceRefresh to bypass the cache/staleness check entirely.
   async function loadForecasts(names, { forceRefresh }) {
     if (!names.length) { setForecasts({}); return; }
     setLoading(true);
@@ -179,12 +232,16 @@ export default function WeatherScreen() {
 
         if (!forceRefresh) {
           const cached = await WeatherRepository.getForBeach(name, today);
-          if (cached) { results[name] = cached; continue; }
+          if (cached && !isWeatherStale(cached)) { results[name] = cached; continue; }
+          console.log(cached ? '[Weather] Cache stale — refreshing...' : '[Weather] No cache for today — fetching...');
         }
 
         try {
+          console.log('[WeatherScreen] fetching for beach:', beach.name);
           const forecast = await fetchBeachWeather(beach);
-          await WeatherRepository.cache(forecast);
+          console.log('[WeatherScreen] fetch result:', forecast);
+          const cacheResult = await WeatherRepository.cache(forecast);
+          console.log('[WeatherScreen] cache write result:', cacheResult);
           results[name] = forecast;
         } catch (err) {
           console.warn('[Weather] fetch failed for', name, err.message);
@@ -223,7 +280,27 @@ export default function WeatherScreen() {
       <Header
         badge={favouriteBeach ? `⭐ ${favouriteBeach.name}` : `Free tier · ${selectedNames.length}/${MAX_BEACHES} beaches`}
         title="🌊 Weather"
+        right={
+          <TouchableOpacity
+            activeOpacity={0.7}
+            onPress={refreshAllWeather}
+            disabled={refreshingAll}
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+            accessibilityRole="button"
+            accessibilityLabel="Refresh weather"
+          >
+            {refreshingAll ? (
+              <ActivityIndicator color={colors.accent} size="small" />
+            ) : (
+              <Text style={styles.refreshIcon}>🔄</Text>
+            )}
+          </TouchableOpacity>
+        }
       />
+
+      {lastRefreshedAt && !refreshingAll && (
+        <Text style={styles.lastUpdatedText}>{formatRelativeTime(lastRefreshedAt)}</Text>
+      )}
 
       <TouchableOpacity activeOpacity={0.7} style={styles.briefingBtn} onPress={openBriefing}>
         <Text style={styles.briefingBtnText}>☀️ Today's Full Briefing</Text>
@@ -469,6 +546,8 @@ export default function WeatherScreen() {
 const styles = StyleSheet.create({
   scrollBg: { backgroundColor: colors.deep },
   container: { padding: 16, flexGrow: 1, paddingBottom: 40 },
+  refreshIcon: { fontSize: 20 },
+  lastUpdatedText: { color: 'rgba(205,232,240,0.4)', fontSize: 11, textAlign: 'right', marginTop: -8, marginBottom: 8 },
   beachName: { color: colors.text, fontSize: 16, fontWeight: '700', marginBottom: 6 },
   line: { color: 'rgba(205,232,240,0.7)', fontSize: 13, marginBottom: 2 },
   verdict: { fontSize: 14, fontWeight: '700', marginTop: 6 },

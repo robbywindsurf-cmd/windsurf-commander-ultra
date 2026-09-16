@@ -1,11 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert } from 'react-native';
 import Header from '../components/Header';
 import SharedCard from '../components/SharedCard';
 import { WeatherBackfillService } from '../services/WeatherBackfillService';
 import { RameHeadWindService } from '../services/RameHeadWindService';
 import { HrBackfillService } from '../services/HrBackfillService';
-import { AnalysisRepository, EmbeddingService, TierService, canAccess, LocalAI } from '@commandersuite/core';
+import { AnalysisRepository, EmbeddingService, TierService, canAccess, LocalAI, getDb } from '@commandersuite/core';
 import { colors } from '../theme';
 
 const DEEP = colors.deep;
@@ -173,6 +173,27 @@ export default function SettingsScreen({ navigation }) {
     } finally {
       setIndexing(false);
     }
+  }
+
+  // TEMPORARY DEBUG — remove once the beach-check weather caching issue is
+  // confirmed fixed. Dumps the 10 most recently fetched weather_cache rows
+  // so it's immediately visible whether the cache is empty, has stale
+  // dates, or has the wrong beach name.
+  async function checkWeatherCache() {
+    const db = await getDb();
+    const rows = await db.getAllAsync(
+      `SELECT beach_name, forecast_date, best_wind_kn, fetched_at
+       FROM weather_cache
+       ORDER BY fetched_at DESC
+       LIMIT 10`
+    );
+    console.log('[Debug] weather_cache:', JSON.stringify(rows));
+    Alert.alert(
+      'Weather Cache',
+      rows.length === 0
+        ? 'Empty — no weather data cached'
+        : rows.map((r) => `${r.beach_name} ${r.forecast_date} ${r.best_wind_kn}kn`).join('\n')
+    );
   }
 
   return (
@@ -434,6 +455,10 @@ export default function SettingsScreen({ navigation }) {
 
       <TouchableOpacity activeOpacity={0.7} style={styles.viewImportBtn} onPress={() => navigation.navigate('ImportData')}>
         <Text style={styles.viewImportBtnText}>📥 Import Historical Data (CSV)</Text>
+      </TouchableOpacity>
+
+      <TouchableOpacity activeOpacity={0.7} style={styles.viewImportBtn} onPress={checkWeatherCache}>
+        <Text style={styles.viewImportBtnText}>🐛 Check Weather Cache (debug)</Text>
       </TouchableOpacity>
     </ScrollView>
   );

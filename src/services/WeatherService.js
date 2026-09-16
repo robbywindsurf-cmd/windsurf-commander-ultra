@@ -22,6 +22,16 @@ export function conditionIndicator(weather) {
 }
 
 const today = () => new Date().toISOString().slice(0, 10);
+const STALE_HOURS = 6;
+
+// A cached row existing isn't enough — one fetched at 06:00 is still
+// "today's" row at 18:00 but the wind picture has likely moved on.
+// Missing fetched_at is treated as stale (fail open to a refetch).
+export function isWeatherStale(cached, maxHours = STALE_HOURS) {
+  if (!cached?.fetched_at) return true;
+  const hoursOld = (Date.now() - new Date(cached.fetched_at).getTime()) / 3600000;
+  return hoursOld > maxHours;
+}
 
 // Shared with WeatherScreen's own beach-picker forecasts, so both paths hit
 // the same Open-Meteo endpoints and cache the same shape into weather_cache.
@@ -100,12 +110,13 @@ export const WeatherService = {
     const rows = await Promise.all(
       beaches.map(async (beach) => {
         let weather = await WeatherRepository.getForBeach(beach.name, date);
-        if (!weather) {
+        if (!weather || isWeatherStale(weather)) {
           try {
             weather = await fetchBeachWeather(beach);
             await WeatherRepository.cache(weather);
           } catch (err) {
             console.warn('[WeatherService] beach check fetch failed for', beach.name, err.message);
+            // Fetch failed — keep serving the stale row rather than nothing.
           }
         }
         return { beach, weather, condition: conditionIndicator(weather) };
