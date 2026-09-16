@@ -177,17 +177,30 @@ export default function ChatScreen({ navigation, route }) {
     try {
       const context = await buildContext();
       const answer = await CoachingService.answerQuestion(msg, context, tier);
+      if (!answer) {
+        // No exception, but nothing usable came back either. Not
+        // necessarily a size problem — LocalAI now logs the full
+        // completion result (stop reason, token counts) when this
+        // happens, so check that log rather than assume "too large".
+        console.warn('[Chat] answerQuestion returned empty/null response for:', msg);
+      }
       setMessages((prev) =>
         prev.filter((m) => m.id !== thinkingMsg.id).concat({
           id: makeId(),
-          text: answer || "⚠️ Couldn't generate a response.",
+          text: answer || '⚠️ AI response failed — the model returned nothing. Check console logs for [LocalAI] empty completion result, or try again.',
           from: 'ai',
         })
       );
     } catch (err) {
+      console.error('[Chat] answerQuestion failed:', err);
+      const sizeRelated = /context is full|context window|too large/i.test(err.message || '');
       setMessages((prev) =>
         prev.filter((m) => m.id !== thinkingMsg.id).concat({
-          id: makeId(), text: '⚠️ ' + (err.message || 'Something went wrong.'), from: 'ai',
+          id: makeId(),
+          text: '⚠️ ' + (sizeRelated
+            ? 'AI response failed — prompt may be too large. Try a simpler question.'
+            : (err.message || 'Something went wrong.')),
+          from: 'ai',
         })
       );
     } finally {

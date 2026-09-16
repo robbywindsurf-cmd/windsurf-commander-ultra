@@ -121,9 +121,21 @@ export default function App() {
         const tier = await TierService.getCachedTier();
         if (tier === 'premium' || tier === 'ultimate') {
           InteractionManager.runAfterInteractions(() => {
-            EmbeddingService.embedAllSessions().catch((err) => {
-              console.warn('[App] background embedding failed:', err.message);
-            });
+            EmbeddingService.embedAllSessions()
+              .catch((err) => {
+                console.warn('[App] background embedding failed:', err.message);
+              })
+              .finally(() => {
+                // embedAllSessions() only recycles its llama.cpp context
+                // every 15 sessions *during* the loop — with nothing left
+                // to embed (the common case on every launch after the
+                // first) that context stays resident indefinitely.
+                // Chat's LocalAI then tries to load its own separate
+                // context on top of it, which is exactly the kind of
+                // two-context memory contention that's caused "Failed to
+                // load model" elsewhere this session.
+                EmbeddingService.release().catch(() => {});
+              });
           });
         }
 
