@@ -646,8 +646,41 @@ export default function ImportDataScreen({ navigation }) {
 
       for (let i = 0; i < rows.length; i++) {
         const row = rows[i];
-        const existing = await SessionRepository.getById(row.session_id);
+        let existing = await SessionRepository.getById(row.session_id);
+
+        // A session first brought in via FIT import carries an id FITImporter
+        // generated itself ('fit_<timestamp>') — unrelated to whatever
+        // session_id this CSV's own export happened to assign the same real
+        // session, so the lookup above never matches it. Fall back to same
+        // date + closest peak speed (unlikely to collide for two different
+        // sessions on the same day) to find it under its real id instead.
+        if (!existing && row.session_date && row.peak_speed_knots !== undefined) {
+          const sameDay = await SessionRepository.getByDate(row.session_date);
+          const targetSpeed = toNumberOrNull(row.peak_speed_knots);
+          if (targetSpeed != null) {
+            let best = null;
+            let bestDiff = Infinity;
+            for (const candidate of sameDay) {
+              if (candidate.max_speed_kn == null) continue;
+              const diff = Math.abs(candidate.max_speed_kn - targetSpeed);
+              if (diff < bestDiff) { bestDiff = diff; best = candidate; }
+            }
+            if (best && bestDiff <= 0.15) existing = best;
+          }
+        }
+
         if (existing) {
+          // Sessions first brought in via FIT import always land with
+          // gear_combo_id null (FIT files carry no board/sail data) — a
+          // later CSV import that does have gear columns is the only way
+          // to backfill it, so update gear here rather than skipping the
+          // row outright just because the session itself already exists.
+          if (!existing.gear_combo_id) {
+            const session = await mapRowToSession(row, equipmentCache, gearComboCache);
+            if (session.gear_combo_id) {
+              await SessionRepository.setGearCombo(existing.session_id, session.gear_combo_id);
+            }
+          }
           skipped += 1;
         } else {
           const session = await mapRowToSession(row, equipmentCache, gearComboCache);

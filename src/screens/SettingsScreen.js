@@ -387,7 +387,7 @@ export default function SettingsScreen({ navigation }) {
                   <Text style={styles.previewSize}>Last indexed: {indexStatus.lastIndexedAt}</Text>
                 )}
                 <Text style={styles.previewSize}>
-                  Embeddings run on-device via the already-downloaded Phi-3 Mini model — first indexing may take several minutes.
+                  Embeddings run on-device via the already-downloaded Llama 3.2 3B Instruct model — first indexing may take several minutes.
                 </Text>
               </>
             )}

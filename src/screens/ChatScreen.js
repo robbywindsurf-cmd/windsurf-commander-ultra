@@ -2,7 +2,7 @@
 // Adapted from the production app's ChatScreen.js: no Oracle webhook, no
 // remote AI. Context (recent sessions, last analysis, weather, equipment)
 // is pulled from local SQLite and passed to commander-core's CoachingService,
-// which runs Phi-3 Mini on-device via llama.rn once the model is downloaded.
+// which runs Llama 3.2 3B Instruct on-device via llama.rn once the model is downloaded.
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
@@ -74,6 +74,15 @@ export default function ChatScreen({ navigation, route }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
+  // TextInput's onSubmitEditing and the Send button's onPress can both
+  // fire from a single tap/return-key gesture on some keyboards, in the
+  // same synchronous tick — before React applies setSending(true), so
+  // both calls read the same stale `sending: false` and neither guard
+  // catches the other. This traced back to two concurrent send() calls
+  // both trying to use the same llama.cpp context at once, which the
+  // native layer doesn't handle cleanly. A ref updates synchronously,
+  // unlike state, so it actually blocks the second call.
+  const sendingRef = useRef(false);
   const [modelDownloaded, setModelDownloaded] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
@@ -166,7 +175,8 @@ export default function ChatScreen({ navigation, route }) {
 
   const send = async (msgText) => {
     const msg = (msgText || input).trim();
-    if (!msg || sending) return;
+    if (!msg || sendingRef.current) return;
+    sendingRef.current = true;
 
     const userMsg = { id: makeId(), text: msg, from: 'user' };
     const thinkingMsg = { id: makeId(), from: 'thinking' };
@@ -204,6 +214,7 @@ export default function ChatScreen({ navigation, route }) {
         })
       );
     } finally {
+      sendingRef.current = false;
       setSending(false);
     }
   };
@@ -267,8 +278,8 @@ export default function ChatScreen({ navigation, route }) {
           </View>
         ) : (
           <TouchableOpacity activeOpacity={0.7} style={styles.downloadBtn} onPress={handleDownloadModel} accessibilityLabel="Download AI Model">
-            <Text style={styles.downloadBtnText}>⬇️ Download AI Model</Text>
-            <Text style={styles.downloadBtnSub}>Requires 2.3GB storage</Text>
+            <Text style={styles.downloadBtnText}>⬇️ Download Llama 3.2 3B (~2.0GB)</Text>
+            <Text style={styles.downloadBtnSub}>Meta's mobile AI — better coaching responses{'\n'}Requires WiFi — takes 5-10 minutes</Text>
           </TouchableOpacity>
         )}
       </View>

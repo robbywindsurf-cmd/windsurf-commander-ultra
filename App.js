@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react';
-import { StyleSheet, Text, View, InteractionManager } from 'react-native';
+import { StyleSheet, Text, View, InteractionManager, AppState } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { getDb, UserStore, TierService, EmbeddingService, WeatherRepository } from '@commandersuite/core';
+import { getDb, UserStore, TierService, EmbeddingService, WeatherRepository, LocalAI, ModelManager } from '@commandersuite/core';
 import { seedEquipment } from './src/utils/seedEquipment';
 import { seedBeaches } from './src/utils/seedBeaches';
 import { fetchBeachWeather, isWeatherStale } from './src/services/WeatherService';
@@ -25,6 +25,20 @@ import PeakMomentScreen from './src/screens/PeakMomentScreen';
 import StatsScreen from './src/screens/StatsScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
 import { colors } from './src/theme';
+
+// The chat LLM context is a true singleton (LocalAI.js) that stays loaded
+// for the whole app session once created — backgrounding is the one
+// reliable moment to know the rider is done with it for now, so release
+// it here rather than between individual messages (releasing per-message
+// was the actual cause of "works once, fails on the second question" —
+// every message paid the full native load cost again, racing anything
+// else touching the model). Registered once at module scope, not inside
+// a component, so it isn't re-subscribed on every render.
+AppState.addEventListener('change', (state) => {
+  if (state === 'background') {
+    LocalAI.release().catch((err) => console.warn('[App] failed to release chat context on background:', err.message));
+  }
+});
 
 const Tab = createBottomTabNavigator();
 const Stack = createNativeStackNavigator();
@@ -109,6 +123,10 @@ export default function App() {
     getDb()
       .then(async () => {
         console.log('[DB] Database initialised');
+        // One-time cleanup after the Phi-3 -> Llama 3.2 model switch — a
+        // no-op once the old file is gone, so safe to call on every launch
+        // rather than tracking a "have we done this" flag.
+        ModelManager.deleteOldModel().catch((err) => console.warn('[App] failed to delete old model:', err.message));
         await Promise.all([seedEquipment(), seedBeaches()]);
         const favourite = await UserStore.getFavouriteBeach();
         setFavouriteBeach(favourite);

@@ -5,7 +5,8 @@ import { SessionRepository, EquipmentRepository, TrackpointRepository } from '@c
 import Header from '../components/Header';
 import SharedCard from '../components/SharedCard';
 import SessionMapPreview from '../components/SessionMapPreview';
-import { pickFitFile, importFitFile, repairLegacyTrackpoints } from '../services/FITImporter';
+import { pickFitFile, importFitFile, repairLegacyTrackpoints, repairMissingDistance } from '../services/FITImporter';
+import { pickSessionsCsv, importSessionsCsv } from '../services/SessionCsvImporter';
 import { colors } from '../theme';
 
 function formatDistanceKm(distanceM) {
@@ -33,6 +34,7 @@ export default function SessionsScreen({ navigation }) {
   const load = useCallback(async () => {
     try {
       await repairLegacyTrackpoints();
+      await repairMissingDistance();
       const [all, combos] = await Promise.all([
         SessionRepository.getAll(),
         EquipmentRepository.getGearCombos(),
@@ -74,6 +76,27 @@ export default function SessionsScreen({ navigation }) {
     }
   }
 
+  async function handleImportSessionsCsv() {
+    setImportError(null);
+    setImportResult(null);
+    try {
+      const asset = await pickSessionsCsv();
+      if (!asset) return;
+
+      setImporting({ status: 'Starting…', pct: 0 });
+      const result = await importSessionsCsv(asset, {
+        onProgress: (status, pct) => setImporting({ status, pct }),
+      });
+
+      setImporting(null);
+      setImportResult({ duplicate: false, sessionsCsv: result });
+      await load();
+    } catch (err) {
+      setImporting(null);
+      setImportError(err.message || 'Import failed.');
+    }
+  }
+
   async function assignGear(comboId) {
     if (gearPromptSessionId) {
       await SessionRepository.setGearCombo(gearPromptSessionId, comboId);
@@ -88,6 +111,12 @@ export default function SessionsScreen({ navigation }) {
 
       <TouchableOpacity activeOpacity={0.7} style={styles.importBtn} onPress={handleImportFit}>
         <Text style={styles.importBtnText}>📥 Import FIT File</Text>
+        <Text style={styles.importBtnSub}>GPS + trackpoints</Text>
+      </TouchableOpacity>
+
+      <TouchableOpacity activeOpacity={0.7} style={styles.importBtn} onPress={handleImportSessionsCsv}>
+        <Text style={styles.importBtnText}>📄 Import Sessions CSV</Text>
+        <Text style={styles.importBtnSub}>Session history + gear</Text>
       </TouchableOpacity>
 
       <TouchableOpacity activeOpacity={0.7}
@@ -95,12 +124,21 @@ export default function SessionsScreen({ navigation }) {
         onPress={() => navigation.navigate('ImportData')}
         accessibilityLabel="Import historical data"
       >
-        <Text style={styles.importHistoricalBtnText}>🗄️ Import historical data</Text>
+        <Text style={styles.importHistoricalBtnText}>🗄️ Import historical data (weather, combos)</Text>
       </TouchableOpacity>
 
       {!!importError && <Text style={styles.errorText}>⚠️ {importError}</Text>}
 
-      {importResult && (
+      {importResult?.sessionsCsv && (
+        <SharedCard>
+          <Text style={styles.resultTitle}>✅ Sessions CSV imported</Text>
+          <Text style={styles.resultText}>
+            {importResult.sessionsCsv.total} rows · {importResult.sessionsCsv.updated} updated · {importResult.sessionsCsv.created} new
+          </Text>
+        </SharedCard>
+      )}
+
+      {importResult && !importResult.sessionsCsv && (
         <SharedCard>
           {importResult.duplicate ? (
             <Text style={styles.resultText}>⚠️ This session is already imported.</Text>
@@ -202,6 +240,7 @@ const styles = StyleSheet.create({
     alignItems: 'center', marginBottom: 12,
   },
   importBtnText: { color: '#fff', fontWeight: '700', fontSize: 14 },
+  importBtnSub: { color: 'rgba(255,255,255,0.75)', fontSize: 11, marginTop: 2 },
   importHistoricalBtn: {
     backgroundColor: 'rgba(26,138,181,0.1)', borderWidth: 1, borderColor: 'rgba(26,138,181,0.25)',
     paddingVertical: 10, borderRadius: 12, alignItems: 'center', marginBottom: 12,

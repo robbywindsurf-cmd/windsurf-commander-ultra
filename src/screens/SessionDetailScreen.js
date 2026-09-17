@@ -1,7 +1,7 @@
 import React, { useCallback, useState } from 'react';
 import { ScrollView, Text, View, StyleSheet, TouchableOpacity } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
-import { SessionRepository, AnalysisRepository, TrackpointRepository, TideRepository, WeatherRepository, UserStore, FeatureGate, WindEstimator, ManoeuvreDetector, AnalyticsService } from '@commandersuite/core';
+import { SessionRepository, EquipmentRepository, AnalysisRepository, TrackpointRepository, TideRepository, WeatherRepository, UserStore, FeatureGate, WindEstimator, ManoeuvreDetector, AnalyticsService } from '@commandersuite/core';
 import Header from '../components/Header';
 import SharedCard from '../components/SharedCard';
 import SessionRouteMap from '../components/SessionRouteMap';
@@ -11,6 +11,7 @@ import { colors } from '../theme';
 export default function SessionDetailScreen({ route, navigation }) {
   const { sessionId } = route.params;
   const [session, setSession] = useState(null);
+  const [gearCombo, setGearCombo] = useState(null);
   const [analyses, setAnalyses] = useState([]);
   const [trackpoints, setTrackpoints] = useState([]);
   const [tidePredictions, setTidePredictions] = useState([]);
@@ -30,6 +31,13 @@ export default function SessionDetailScreen({ route, navigation }) {
           ]);
           if (cancelled) return;
           setSession(s); setAnalyses(a); setTrackpoints(tp);
+
+          if (s?.gear_combo_id) {
+            const combos = await EquipmentRepository.getGearCombos();
+            if (!cancelled) setGearCombo(combos.find((c) => c.id === s.gear_combo_id) || null);
+          } else {
+            setGearCombo(null);
+          }
 
           let weatherRow = null;
           if (s?.date) {
@@ -113,6 +121,32 @@ export default function SessionDetailScreen({ route, navigation }) {
         <Text style={styles.row}>Distance: {session.distance_m ? `${(session.distance_m / 1000).toFixed(1)} km` : '—'}</Text>
         <Text style={styles.row}>Duration: {session.duration_s ? `${Math.round(session.duration_s / 60)} min` : '—'}</Text>
       </SharedCard>
+
+      {gearCombo?.board_name && (
+        <>
+          <Text style={styles.sectionLabel}>Equipment</Text>
+          <SharedCard>
+            <Text style={styles.row}>
+              🏄 Board: {gearCombo.board_brand ? gearCombo.board_brand + ' ' : ''}{gearCombo.board_name}
+              {gearCombo.board_size ? ` ${gearCombo.board_size}${/[a-zA-Z]/.test(String(gearCombo.board_size)) ? '' : 'L'}` : ''}
+            </Text>
+            <Text style={styles.row}>
+              ⛵ Sail: {gearCombo.sail_name
+                ? `${gearCombo.sail_brand ? gearCombo.sail_brand + ' ' : ''}${gearCombo.sail_name}${gearCombo.sail_size != null ? ` ${gearCombo.sail_size}${/[a-zA-Z]/.test(String(gearCombo.sail_size)) ? '' : 'm²'}` : ''}`
+                : '—'}
+            </Text>
+            {gearCombo.fin_name && (
+              <Text style={styles.row}>
+                Fin: {gearCombo.fin_name}
+                {gearCombo.fin_size ? ` ${gearCombo.fin_size}${/[a-zA-Z]/.test(String(gearCombo.fin_size)) ? '' : 'cm'}` : ''}
+              </Text>
+            )}
+            {!!gearCombo.notes && (
+              <Text style={styles.disclaimerText}>{gearCombo.notes}</Text>
+            )}
+          </SharedCard>
+        </>
+      )}
 
       <Text style={styles.sectionLabel}>Weather</Text>
       <SharedCard>

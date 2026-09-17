@@ -175,6 +175,41 @@ export async function repairLegacyTrackpoints() {
   return { repaired: bad.length };
 }
 
+// Repair for sessions.distance_m lost to an earlier version of the CSV
+// session import, which fully replaced session rows (including
+// distance_m, which the CSV never carries) instead of merging in only the
+// columns it actually has — see SessionCsvImporter.js. Recomputes it from
+// this session's own stored GPS trackpoints (summed haversine distance
+// between consecutive points) wherever it's missing but a track exists.
+// Safe to call on every app start — sessions that already have a distance
+// are left alone.
+export async function repairMissingDistance() {
+  const db = await getDb();
+  const missing = await db.getAllAsync(`
+    SELECT DISTINCT s.session_id
+    FROM sessions s
+    JOIN trackpoints t ON t.session_id = s.session_id
+    WHERE s.distance_m IS NULL
+  `);
+  if (!missing.length) return { repaired: 0 };
+
+  for (const { session_id } of missing) {
+    const points = await db.getAllAsync(
+      'SELECT lat, lon FROM trackpoints WHERE session_id = ? AND lat IS NOT NULL AND lon IS NOT NULL ORDER BY timestamp ASC',
+      [session_id]
+    );
+    if (points.length < 2) continue;
+
+    let distanceM = 0;
+    for (let i = 1; i < points.length; i++) {
+      distanceM += haversineMeters(points[i - 1].lat, points[i - 1].lon, points[i].lat, points[i].lon);
+    }
+    await db.runAsync('UPDATE sessions SET distance_m = ? WHERE session_id = ?', [Math.round(distanceM), session_id]);
+  }
+
+  return { repaired: missing.length };
+}
+
 // Opens the document picker restricted to .fit files. Returns the picked
 // asset ({ uri, name, size }) or null if the user cancelled.
 export async function pickFitFile() {
@@ -213,39 +248,67 @@ export async function importFitFile(asset, { onProgress } = {}) {
   const records = fillMissingSpeeds(data.records || []);
   const heartRates = records.map((r) => r.heart_rate).filter((v) => v != null);
 
-  onProgress?.('Checking for duplicates…', 0.5);
-  const sessionId = resolveSessionId(session, records, asset);
-  const existing = await SessionRepository.getById(sessionId);
-  if (existing) {
+  const maxSpeedMps = resolveSpeed(session, records, 'max');
+  const avgSpeedMps = resolveSpeed(session, records, 'avg');
+  const maxSpeedKn = toKn(maxSpeedMps);
+  const fitDate = isoDate(session.start_time);
+
+  onProgress?.('Checking for a matching session…', 0.5);
+  // The sessions CSV (SessionCsvImporter.js) is the primary source for
+  // sessions + gear now — a FIT file's own generated id ('fit_<timestamp>')
+  // has no relation to whatever session_id that CSV carries for the same
+  // real session, so look up by date + closest peak speed instead of by
+  // id. Same day + near-identical top speed is very unlikely to collide
+  // for two different sessions. Falls back to creating a bare, gear-less
+  // session (the old behaviour) when nothing matches — e.g. this session
+  // hasn't been brought in via CSV yet.
+  let sessionId = resolveSessionId(session, records, asset);
+  let matched = null;
+  if (fitDate != null) {
+    const sameDay = await SessionRepository.getByDate(fitDate);
+    let bestDiff = Infinity;
+    for (const candidate of sameDay) {
+      if (candidate.max_speed_kn == null || maxSpeedKn == null) continue;
+      const diff = Math.abs(candidate.max_speed_kn - maxSpeedKn);
+      if (diff < bestDiff) { bestDiff = diff; matched = candidate; }
+    }
+    if (bestDiff > 1.0) matched = null;
+  }
+  if (matched) sessionId = matched.session_id;
+
+  const db = await getDb();
+  const alreadyHasTrackpoints = await db.getFirstAsync(
+    'SELECT 1 FROM trackpoints WHERE session_id = ? LIMIT 1',
+    [sessionId]
+  );
+  if (alreadyHasTrackpoints) {
     onProgress?.('Already imported', 1);
     return { duplicate: true, sessionId };
   }
 
-  const maxSpeedMps = resolveSpeed(session, records, 'max');
-  const avgSpeedMps = resolveSpeed(session, records, 'avg');
-
-  onProgress?.('Saving session…', 0.7);
-  await SessionRepository.insert({
-    session_id: sessionId,
-    date: isoDate(session.start_time),
-    start_time: isoTime(session.start_time),
-    end_time: isoTime(session.timestamp),
-    duration_s: session.total_elapsed_time ?? null,
-    distance_m: session.total_distance ?? null,
-    max_speed_kn: toKn(maxSpeedMps),
-    avg_speed_kn: toKn(avgSpeedMps),
-    max_hr: session.max_heart_rate ?? (heartRates.length ? Math.max(...heartRates) : null),
-    avg_hr: session.avg_heart_rate
-      ?? (heartRates.length ? Math.round(heartRates.reduce((a, b) => a + b, 0) / heartRates.length) : null),
-    calories: session.total_calories ?? null,
-    sport: session.sport || 'windsurf',
-    beach_id: null,
-    gear_combo_id: null,
-    notes: null,
-  });
+  if (!matched) {
+    onProgress?.('Saving session…', 0.7);
+    await SessionRepository.insert({
+      session_id: sessionId,
+      date: fitDate,
+      start_time: isoTime(session.start_time),
+      end_time: isoTime(session.timestamp),
+      duration_s: session.total_elapsed_time ?? null,
+      distance_m: session.total_distance ?? null,
+      max_speed_kn: maxSpeedKn,
+      avg_speed_kn: toKn(avgSpeedMps),
+      max_hr: session.max_heart_rate ?? (heartRates.length ? Math.max(...heartRates) : null),
+      avg_hr: session.avg_heart_rate
+        ?? (heartRates.length ? Math.round(heartRates.reduce((a, b) => a + b, 0) / heartRates.length) : null),
+      calories: session.total_calories ?? null,
+      sport: session.sport || 'windsurf',
+      beach_id: null,
+      gear_combo_id: null,
+      notes: null,
+    });
+  }
 
   onProgress?.(`Saving ${records.length} trackpoints…`, 0.85);
-  const db = await getDb();
   await insertTrackpoints(db, sessionId, records);
 
   onProgress?.('Complete', 1);
