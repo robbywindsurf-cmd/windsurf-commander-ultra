@@ -325,7 +325,7 @@ export default function WeatherScreen() {
               {f ? (
                 <>
                   <Text style={styles.line}>
-                    Wind: {f.best_wind_kn ?? '—'} kn {compass(f.best_wind_dir)} · Best time {f.best_time ?? '—'}
+                    Wind: {f.best_wind_kn ?? '—'}{f.best_gust_kn != null ? ` (gusts ${f.best_gust_kn})` : ''} kn {compass(f.best_wind_dir)} · Best time {f.best_time ?? '—'}
                   </Text>
                   <Text style={styles.line}>
                     Wave: {f.wave_height_m != null ? `${f.wave_height_m} m` : '—'} · Temp: {f.temperature_c != null ? `${f.temperature_c}°C` : '—'}
@@ -361,6 +361,7 @@ export default function WeatherScreen() {
                     <Text style={styles.forecastDayName}>{d.dayName}</Text>
                     <Text style={styles.forecastVerdict}>{d.verdict}</Text>
                     <Text style={styles.forecastLine}>{d.windKn != null ? `${Math.round(d.windKn)}kn` : '—'}</Text>
+                    {d.gustKn != null && <Text style={styles.forecastLine}>g:{Math.round(d.gustKn)}kn</Text>}
                     <Text style={styles.forecastLine}>{d.windDir || '—'}</Text>
                     <Text style={styles.forecastLine}>{d.waveM != null ? `${d.waveM.toFixed(1)}m` : '—'}</Text>
                   </View>
@@ -471,7 +472,9 @@ export default function WeatherScreen() {
                     </Text>
                     <Text style={styles.detailLine}>
                       💨 <Text style={styles.detailLineLabel}>Best wind:</Text>{' '}
-                      {selectedCheck.weather.best_wind_kn ?? '—'}kn {compass(selectedCheck.weather.best_wind_dir)}
+                      {selectedCheck.weather.best_wind_kn ?? '—'}kn
+                      {selectedCheck.weather.best_gust_kn != null ? ` (gusts ${selectedCheck.weather.best_gust_kn}kn)` : ''}
+                      {' '}{compass(selectedCheck.weather.best_wind_dir)}
                       {selectedCheck.weather.best_wind_dir != null ? ` (${Math.round(selectedCheck.weather.best_wind_dir)}°)` : ''}
                       {selectedCheck.weather.best_time ? ` at ${selectedCheck.weather.best_time}` : ''}
                     </Text>

@@ -38,7 +38,7 @@ export function isWeatherStale(cached, maxHours = STALE_HOURS) {
 export async function fetchBeachWeather(beach) {
   const wRes = await fetch(
     `https://api.open-meteo.com/v1/forecast?latitude=${beach.lat}&longitude=${beach.lon}` +
-    `&hourly=windspeed_10m,winddirection_10m,temperature_2m&timezone=auto`
+    `&hourly=windspeed_10m,windgusts_10m,winddirection_10m,temperature_2m&timezone=auto`
   );
   const wData = await wRes.json();
 
@@ -73,8 +73,13 @@ export async function fetchBeachWeather(beach) {
     const speed = wData.hourly?.windspeed_10m?.[i];
     return speed != null ? Math.round(speed * 0.539957 * 10) / 10 : null;
   };
+  const gustKnots = (i) => {
+    const gust = wData.hourly?.windgusts_10m?.[i];
+    return gust != null ? Math.round(gust * 0.539957 * 10) / 10 : null;
+  };
 
   const bestWindKn = bestSpeed >= 0 ? knots(bestIdx) : null;
+  const bestGustKn = bestSpeed >= 0 ? gustKnots(bestIdx) : null;
   const bestWindDir = wData.hourly?.winddirection_10m?.[bestIdx] ?? null;
   const bestTime = allHours[bestIdx] ? allHours[bestIdx].slice(11, 16) : null;
   const waveHeight = mData?.hourly?.wave_height?.[bestIdx] ?? null;
@@ -83,6 +88,7 @@ export async function fetchBeachWeather(beach) {
   const hourlyForecast = dayIdxs.map((i) => ({
     time: allHours[i].slice(11, 16),
     wind_kn: knots(i),
+    gust_kn: gustKnots(i),
     wind_dir: wData.hourly?.winddirection_10m?.[i] ?? null,
   }));
 
@@ -90,6 +96,7 @@ export async function fetchBeachWeather(beach) {
     beach_name: beach.name,
     forecast_date: todayStr,
     best_wind_kn: bestWindKn,
+    best_gust_kn: bestGustKn,
     best_wind_dir: bestWindDir,
     best_time: bestTime,
     wave_height_m: waveHeight,
@@ -185,7 +192,7 @@ export const WeatherService = {
 
     const forecastUrl =
       `https://api.open-meteo.com/v1/forecast?latitude=${beach.lat}&longitude=${beach.lon}` +
-      `&daily=wind_speed_10m_max,wind_direction_10m_dominant,precipitation_sum&wind_speed_unit=kn&forecast_days=5`;
+      `&daily=wind_speed_10m_max,wind_gusts_10m_max,wind_direction_10m_dominant,precipitation_sum&wind_speed_unit=kn&forecast_days=5`;
     const marineUrl =
       `https://marine-api.open-meteo.com/v1/marine?latitude=${beach.lat}&longitude=${beach.lon}` +
       `&daily=wave_height_max&models=best_match&forecast_days=5`;
@@ -198,12 +205,14 @@ export const WeatherService = {
     const days = fData?.daily?.time || [];
     return days.map((date, i) => {
       const windKn = fData.daily.wind_speed_10m_max?.[i] ?? null;
+      const gustKn = fData.daily.wind_gusts_10m_max?.[i] ?? null;
       const waveM = mData?.daily?.wave_height_max?.[i] ?? null;
       const indicator = conditionIndicator({ best_wind_kn: windKn, wave_height_m: waveM });
       return {
         date,
         dayName: new Date(date).toLocaleDateString(undefined, { weekday: 'short' }),
         windKn,
+        gustKn,
         windDir: degreesToCompass(fData.daily.wind_direction_10m_dominant?.[i]),
         waveM,
         verdict: indicator.emoji,

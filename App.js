@@ -5,7 +5,7 @@ import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { getDb, UserStore, TierService, EmbeddingService, WeatherRepository, LocalAI, ModelManager } from '@commandersuite/core';
+import { getDb, UserStore, TierService, EmbeddingService, WeatherRepository, LocalAI, ModelManager, SummaryService } from '@commandersuite/core';
 import { seedEquipment } from './src/utils/seedEquipment';
 import { seedBeaches } from './src/utils/seedBeaches';
 import { fetchBeachWeather, isWeatherStale } from './src/services/WeatherService';
@@ -131,6 +131,28 @@ export default function App() {
         const favourite = await UserStore.getFavouriteBeach();
         setFavouriteBeach(favourite);
         setDbReady(true);
+
+        // Only recompute if stale (>24h) — refreshSummaries() itself is
+        // cheap (current year + rolling recent, not a full rebuild), but
+        // no need to run it on every single launch either. Non-blocking:
+        // PromptBuilder reads whatever's already in year_summaries/
+        // recent_summary, stale-by-a-few-minutes is fine for a chat prompt.
+        InteractionManager.runAfterInteractions(async () => {
+          try {
+            const lastComputed = await SummaryService.getLastComputedAt();
+            // SQLite's datetime('now') stores "YYYY-MM-DD HH:MM:SS" (space,
+            // no zone) — Date() only parses that reliably once it looks
+            // like ISO 8601 (a 'T' and a 'Z' for UTC).
+            const staleMs = lastComputed
+              ? Date.now() - new Date(lastComputed.replace(' ', 'T') + 'Z').getTime()
+              : Infinity;
+            if (staleMs > 24 * 60 * 60 * 1000) {
+              await SummaryService.refreshSummaries();
+            }
+          } catch (err) {
+            console.warn('[App] summary refresh failed:', err.message);
+          }
+        });
 
         // RAG embeddings are a Premium+ feature — skip entirely for free
         // tier. embedAllSessions() itself skips sessions already embedded,

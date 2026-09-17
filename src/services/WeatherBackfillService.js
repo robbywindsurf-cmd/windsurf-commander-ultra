@@ -48,7 +48,7 @@ async function fetchAndCacheWeather(session, beachName, fallbackBeach) {
   const archiveUrl =
     `https://archive-api.open-meteo.com/v1/archive?latitude=${lat}&longitude=${lon}` +
     `&start_date=${date}&end_date=${date}` +
-    `&hourly=wind_speed_10m,wind_direction_10m,temperature_2m&wind_speed_unit=kn&timezone=UTC`;
+    `&hourly=wind_speed_10m,wind_gusts_10m,wind_direction_10m,temperature_2m&wind_speed_unit=kn&timezone=UTC`;
   const marineUrl =
     `https://marine-api.open-meteo.com/v1/marine?latitude=${lat}&longitude=${lon}` +
     `&start_date=${date}&end_date=${date}` +
@@ -86,6 +86,7 @@ async function fetchAndCacheWeather(session, beachName, fallbackBeach) {
     beach_name: beachName || fallbackBeach?.name || null,
     forecast_date: date,
     best_wind_kn: archive.hourly.wind_speed_10m?.[bestIdx] ?? null,
+    best_gust_kn: archive.hourly.wind_gusts_10m?.[bestIdx] ?? null,
     best_wind_dir: archive.hourly.wind_direction_10m?.[bestIdx] ?? null,
     best_time: times[bestIdx]?.slice(11, 16) ?? null,
     wave_height_m: waveHeightM,
@@ -94,6 +95,50 @@ async function fetchAndCacheWeather(session, beachName, fallbackBeach) {
   };
 
   await WeatherRepository.cache(weather);
+}
+
+// Fetches just wind + gust for one already-cached weather_cache row (no
+// session needed — beach name/date/lat/lon come from the row itself via
+// `beaches`), and updates best_gust_kn in place without touching the rest
+// of the row. Used to retrofit gust data onto rows that predate the
+// windgusts_10m field being requested at all (historical CSV imports and
+// earlier archive backfills alike).
+async function fetchAndCacheGust(row, beach) {
+  const lat = beach?.lat;
+  const lon = beach?.lon;
+  if (lat == null || lon == null) throw new Error(`No coordinates for beach "${row.beach_name}"`);
+
+  const archiveUrl =
+    `https://archive-api.open-meteo.com/v1/archive?latitude=${lat}&longitude=${lon}` +
+    `&start_date=${row.forecast_date}&end_date=${row.forecast_date}` +
+    `&hourly=wind_gusts_10m&wind_speed_unit=kn&timezone=UTC`;
+
+  const res = await fetch(archiveUrl);
+  if (!res.ok) throw new Error(`Open-Meteo archive error ${res.status}`);
+  const archive = await res.json();
+
+  const times = archive?.hourly?.time || [];
+  if (!times.length) throw new Error('No archive data for this date');
+
+  let bestIdx = 0;
+  if (row.best_time) {
+    const targetMs = new Date(`${row.forecast_date}T${row.best_time}`).getTime();
+    let bestDiff = Infinity;
+    times.forEach((t, i) => {
+      const diff = Math.abs(new Date(t).getTime() - targetMs);
+      if (diff < bestDiff) { bestDiff = diff; bestIdx = i; }
+    });
+  }
+
+  const gustKn = archive.hourly.wind_gusts_10m?.[bestIdx] ?? null;
+  if (gustKn == null) return false;
+
+  const db = await getDb();
+  await db.runAsync(
+    'UPDATE weather_cache SET best_gust_kn = ? WHERE beach_name = ? AND forecast_date = ?',
+    [gustKn, row.beach_name, row.forecast_date]
+  );
+  return true;
 }
 
 export const WeatherBackfillService = {
@@ -138,6 +183,48 @@ export const WeatherBackfillService = {
         }
       } catch (err) {
         errors.push({ sessionId: session.session_id, message: err.message });
+      }
+      onProgress?.(completed, total);
+    }
+
+    return { success: errors.length === 0, count, errors };
+  },
+
+  // Count of cached weather rows (from CSV import or an earlier backfill,
+  // either way from before windgusts_10m was ever requested) with no
+  // gust figure yet.
+  async countMissingGusts() {
+    const db = await getDb();
+    const row = await db.getFirstAsync('SELECT COUNT(*) as n FROM weather_cache WHERE best_gust_kn IS NULL');
+    return row?.n ?? 0;
+  },
+
+  // Retrofits best_gust_kn onto every existing weather_cache row that
+  // doesn't have one — one archive call per row (beach name resolved
+  // against `beaches` for lat/lon), rate-limited the same as
+  // backfillAllSessions().
+  async backfillMissingGusts(onProgress) {
+    const db = await getDb();
+    const [rows, beaches] = await Promise.all([
+      db.getAllAsync('SELECT beach_name, forecast_date, best_time FROM weather_cache WHERE best_gust_kn IS NULL'),
+      BeachRepository.getAll(),
+    ]);
+    const beachByName = new Map(beaches.map((b) => [b.name, b]));
+
+    const total = rows.length;
+    let completed = 0;
+    let count = 0;
+    const errors = [];
+
+    for (const row of rows) {
+      completed += 1;
+      try {
+        const beach = beachByName.get(row.beach_name);
+        const updated = await fetchAndCacheGust(row, beach);
+        if (updated) count += 1;
+        await sleep(RATE_LIMIT_MS);
+      } catch (err) {
+        errors.push({ beachName: row.beach_name, date: row.forecast_date, message: err.message });
       }
       onProgress?.(completed, total);
     }

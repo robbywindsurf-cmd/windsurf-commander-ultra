@@ -5,7 +5,7 @@ import SharedCard from '../components/SharedCard';
 import { WeatherBackfillService } from '../services/WeatherBackfillService';
 import { RameHeadWindService } from '../services/RameHeadWindService';
 import { HrBackfillService } from '../services/HrBackfillService';
-import { AnalysisRepository, EmbeddingService, TierService, canAccess, LocalAI, getDb } from '@commandersuite/core';
+import { AnalysisRepository, EmbeddingService, TierService, canAccess, LocalAI, getDb, SummaryService } from '@commandersuite/core';
 import { colors } from '../theme';
 
 const DEEP = colors.deep;
@@ -35,6 +35,34 @@ export default function SettingsScreen({ navigation }) {
   useEffect(() => {
     WeatherBackfillService.countMissing().then(setMissingWeatherCount).catch(() => {});
   }, []);
+
+  const [missingGustCount, setMissingGustCount] = useState(null);
+  const [gustBackfillRunning, setGustBackfillRunning] = useState(false);
+  const [gustBackfillProgress, setGustBackfillProgress] = useState({ completed: 0, total: 0 });
+  const [gustBackfillResult, setGustBackfillResult] = useState(null);
+  const [gustBackfillError, setGustBackfillError] = useState('');
+
+  useEffect(() => {
+    WeatherBackfillService.countMissingGusts().then(setMissingGustCount).catch(() => {});
+  }, []);
+
+  async function runGustBackfill() {
+    setGustBackfillRunning(true);
+    setGustBackfillError('');
+    setGustBackfillResult(null);
+    setGustBackfillProgress({ completed: 0, total: 0 });
+    try {
+      const result = await WeatherBackfillService.backfillMissingGusts((completed, total) =>
+        setGustBackfillProgress({ completed, total })
+      );
+      setGustBackfillResult(result);
+      setMissingGustCount(await WeatherBackfillService.countMissingGusts());
+    } catch (e) {
+      setGustBackfillError(e.message || 'Gust backfill failed');
+    } finally {
+      setGustBackfillRunning(false);
+    }
+  }
 
   const [rameEligibleCount, setRameEligibleCount] = useState(null);
   const [rameRunning, setRameRunning] = useState(false);
@@ -108,6 +136,8 @@ export default function SettingsScreen({ navigation }) {
   }
 
   const [tier, setTier] = useState(null);
+  const [summariesComputedAt, setSummariesComputedAt] = useState(null);
+  const [summariesLoading, setSummariesLoading] = useState(false);
   const [indexStatus, setIndexStatus] = useState(null); // { indexed, total, lastIndexedAt }
   const [indexing, setIndexing] = useState(false);
   const [indexPhase, setIndexPhase] = useState('sessions'); // 'sessions' | 'notes'
@@ -118,7 +148,21 @@ export default function SettingsScreen({ navigation }) {
   useEffect(() => {
     TierService.getCachedTier().then(setTier);
     EmbeddingService.getIndexStatus().then(setIndexStatus).catch(() => {});
+    SummaryService.getLastComputedAt().then(setSummariesComputedAt).catch(() => {});
   }, []);
+
+  async function runRecomputeSummaries() {
+    setSummariesLoading(true);
+    try {
+      await SummaryService.computeAllSummaries();
+      const computedAt = await SummaryService.getLastComputedAt();
+      setSummariesComputedAt(computedAt);
+    } catch (err) {
+      console.warn('[Settings] recompute summaries failed:', err.message);
+    } finally {
+      setSummariesLoading(false);
+    }
+  }
 
   // rebuild=true clears every existing embedding first, so sessions that
   // were already indexed (and would otherwise be skipped) get regenerated
@@ -250,6 +294,61 @@ export default function SettingsScreen({ navigation }) {
         </SharedCard>
       )}
 
+      <Text style={styles.sectionLabel}>💨 Backfill Wind Gusts</Text>
+      <SharedCard style={styles.previewCard}>
+        {missingGustCount == null ? (
+          <Text style={styles.previewName}>Checking gust coverage…</Text>
+        ) : (
+          <>
+            <Text style={styles.previewName}>
+              {missingGustCount} cached weather row{missingGustCount === 1 ? '' : 's'} missing gust data
+            </Text>
+            <Text style={styles.previewSize}>
+              Covers weather imported or backfilled before gusts were tracked — average wind only, no gust figure.
+            </Text>
+          </>
+        )}
+      </SharedCard>
+
+      {!gustBackfillRunning && !gustBackfillResult && missingGustCount > 0 && (
+        <TouchableOpacity activeOpacity={0.7} style={styles.importBtn} onPress={runGustBackfill}>
+          <Text style={styles.importBtnText}>💨 Backfill Wind Gusts</Text>
+        </TouchableOpacity>
+      )}
+
+      {gustBackfillRunning && (
+        <SharedCard style={styles.progressCard}>
+          <Text style={styles.progressLabel}>Fetching gusts from Open-Meteo…</Text>
+          <View style={styles.progressTrack}>
+            <View
+              style={[
+                styles.progressFill,
+                { width: `${gustBackfillProgress.total ? Math.round((gustBackfillProgress.completed / gustBackfillProgress.total) * 100) : 0}%` },
+              ]}
+            />
+          </View>
+          <Text style={styles.progressCount}>
+            {gustBackfillProgress.completed} / {gustBackfillProgress.total} rows
+          </Text>
+        </SharedCard>
+      )}
+
+      {!!gustBackfillError && <Text style={styles.errorText}>⚠️ {gustBackfillError}</Text>}
+
+      {gustBackfillResult && (
+        <SharedCard style={styles.resultCard}>
+          <View style={styles.resultCenter}>
+            <Text style={styles.resultIcon}>{gustBackfillResult.success ? '✅' : '⚠️'}</Text>
+            <Text style={[styles.resultTitle, { color: gustBackfillResult.success ? SAFE : ACCENT }]}>
+              {gustBackfillResult.count} row{gustBackfillResult.count === 1 ? '' : 's'} backfilled
+            </Text>
+            {gustBackfillResult.errors.length > 0 && (
+              <Text style={styles.resultSub}>{gustBackfillResult.errors.length} error(s) — check network and retry</Text>
+            )}
+          </View>
+        </SharedCard>
+      )}
+
       <Text style={styles.sectionLabel}>🎯 Rame Head Wind Backfill</Text>
       <SharedCard style={styles.previewCard}>
         {rameEligibleCount == null ? (
@@ -357,6 +456,19 @@ export default function SettingsScreen({ navigation }) {
           </View>
         </SharedCard>
       )}
+
+      <Text style={styles.sectionLabel}>📊 AI Context Summaries</Text>
+      <SharedCard style={styles.previewCard}>
+        <Text style={styles.previewName}>
+          {summariesComputedAt ? `Last computed: ${summariesComputedAt}` : 'Not computed yet'}
+        </Text>
+        <Text style={styles.previewSize}>
+          Pre-computed year-by-year and recent-form stats the AI coach reads from, instead of re-deriving them from every session on each question.
+        </Text>
+      </SharedCard>
+      <TouchableOpacity activeOpacity={0.7} style={styles.importBtn} onPress={runRecomputeSummaries} disabled={summariesLoading}>
+        <Text style={styles.importBtnText}>{summariesLoading ? 'Computing…' : '📊 Recompute Summaries'}</Text>
+      </TouchableOpacity>
 
       <Text style={styles.sectionLabel}>🧠 AI Semantic Search</Text>
       {tier === null ? (

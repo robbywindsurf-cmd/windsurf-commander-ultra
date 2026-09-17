@@ -1,7 +1,7 @@
 import React, { useCallback, useState } from 'react';
 import { ScrollView, Text, TouchableOpacity, StyleSheet, Modal, View, ActivityIndicator } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
-import { SessionRepository, EquipmentRepository, TrackpointRepository } from '@commandersuite/core';
+import { SessionRepository, EquipmentRepository, TrackpointRepository, SummaryService } from '@commandersuite/core';
 import Header from '../components/Header';
 import SharedCard from '../components/SharedCard';
 import SessionMapPreview from '../components/SessionMapPreview';
@@ -68,6 +68,7 @@ export default function SessionsScreen({ navigation }) {
 
       setImporting(null);
       setImportResult(result);
+      if (!result.duplicate) SummaryService.refreshSummaries().catch((err) => console.warn('[Sessions] summary refresh failed:', err.message));
       await load();
       if (!result.duplicate) setGearPromptSessionId(result.sessionId);
     } catch (err) {
@@ -90,6 +91,7 @@ export default function SessionsScreen({ navigation }) {
 
       setImporting(null);
       setImportResult({ duplicate: false, sessionsCsv: result });
+      SummaryService.refreshSummaries().catch((err) => console.warn('[Sessions] summary refresh failed:', err.message));
       await load();
     } catch (err) {
       setImporting(null);

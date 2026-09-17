@@ -155,6 +155,7 @@ export default function SessionDetailScreen({ route, navigation }) {
             <Text style={styles.row}>📍 {weather.beach_name}</Text>
             <Text style={styles.row}>
               💨 {weather.best_wind_kn != null ? `${Math.round(weather.best_wind_kn)}kn` : '—'}
+              {weather.best_gust_kn != null ? ` (gusts ${Math.round(weather.best_gust_kn)}kn)` : ''}
               {weather.best_wind_dir != null ? ` ${weather.best_wind_dir}°` : ''}
             </Text>
             <Text style={styles.row}>🌊 {weather.wave_height_m != null ? `${weather.wave_height_m}m swell` : '—'}</Text>

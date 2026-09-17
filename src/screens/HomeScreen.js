@@ -132,7 +132,7 @@ export default function HomeScreen({ navigation }) {
         {weather ? (
           <>
             <Text style={styles.conditionsLine}>
-              Wind {weather.best_wind_kn ?? '—'} kn {compass(weather.best_wind_dir)} · Best time {weather.best_time ?? '—'}
+              Wind {weather.best_wind_kn ?? '—'}{weather.best_gust_kn != null ? ` (gusts ${weather.best_gust_kn})` : ''} kn {compass(weather.best_wind_dir)} · Best time {weather.best_time ?? '—'}
             </Text>
             <Text style={styles.conditionsLine}>
               Wave {weather.wave_height_m != null ? `${weather.wave_height_m} m` : '—'} · Temp {weather.temperature_c != null ? `${weather.temperature_c}°C` : '—'}
