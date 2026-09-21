@@ -172,7 +172,11 @@ export async function analyseSessionVideo({
       onStatus?.('Generating coaching report…');
       try {
         const session = await SessionRepository.getById(sessionId);
-        coachingReport = await CoachingService.generateCoaching(session || {}, analysisData, userTier);
+        // Only real when this session also has a FIT-file GPS track —
+        // insertFrames() above already correlated each frame's speed_kn
+        // against trackpoints, so this is just reading that back out.
+        const speedSummary = analysisId ? await AnalysisRepository.getFrameSpeedSummary(analysisId) : null;
+        coachingReport = await CoachingService.generateCoaching(session || {}, analysisData, userTier, speedSummary);
         if (coachingReport) {
           await AnalysisRepository.insertCoachingNote({
             session_id: sessionId,

@@ -7,12 +7,15 @@ import SharedCard from '../components/SharedCard';
 import SessionRouteMap from '../components/SessionRouteMap';
 import TideChart from '../components/TideChart';
 import { colors } from '../theme';
+import { formatLocalTime } from '../utils/videoUtc';
 
 export default function SessionDetailScreen({ route, navigation }) {
   const { sessionId } = route.params;
   const [session, setSession] = useState(null);
   const [gearCombo, setGearCombo] = useState(null);
   const [analyses, setAnalyses] = useState([]);
+  const [coachingNotes, setCoachingNotes] = useState([]);
+  const [expandedNoteId, setExpandedNoteId] = useState(null);
   const [trackpoints, setTrackpoints] = useState([]);
   const [tidePredictions, setTidePredictions] = useState([]);
   const [tideStateAtStart, setTideStateAtStart] = useState(null);
@@ -24,13 +27,14 @@ export default function SessionDetailScreen({ route, navigation }) {
       let cancelled = false;
       (async () => {
         try {
-          const [s, a, tp] = await Promise.all([
+          const [s, a, tp, notes] = await Promise.all([
             SessionRepository.getById(sessionId),
             AnalysisRepository.getAnalysesForSession(sessionId),
             TrackpointRepository.getSampledForSession(sessionId, 400),
+            AnalysisRepository.getCoachingNotes(sessionId),
           ]);
           if (cancelled) return;
-          setSession(s); setAnalyses(a); setTrackpoints(tp);
+          setSession(s); setAnalyses(a); setTrackpoints(tp); setCoachingNotes(notes);
 
           if (s?.gear_combo_id) {
             const combos = await EquipmentRepository.getGearCombos();
@@ -232,9 +236,32 @@ export default function SessionDetailScreen({ route, navigation }) {
         feature="COACHING_REPORT"
         onUpgradePress={() => navigation.navigate('Upgrade', { featureId: 'COACHING_REPORT' })}
       >
-        <SharedCard>
-          <Text style={styles.row}>AI coaching report available.</Text>
-        </SharedCard>
+        {coachingNotes.length === 0 ? (
+          <SharedCard>
+            <Text style={styles.row}>No coaching report generated for this session yet.</Text>
+          </SharedCard>
+        ) : (
+          coachingNotes.map((note) => {
+            const expanded = expandedNoteId === note.id;
+            return (
+              <SharedCard key={note.id}>
+                <Text style={styles.row}>
+                  🏄 Coaching report{note.generated_at ? ` — ${formatLocalTime(note.generated_at)}` : ''}
+                </Text>
+                {expanded && (
+                  <Text style={[styles.row, { marginTop: 8 }]}>{note.report_text}</Text>
+                )}
+                <TouchableOpacity
+                  activeOpacity={0.7}
+                  style={styles.reportBtn}
+                  onPress={() => setExpandedNoteId(expanded ? null : note.id)}
+                >
+                  <Text style={styles.reportBtnText}>{expanded ? 'Hide report' : '📖 Read report'}</Text>
+                </TouchableOpacity>
+              </SharedCard>
+            );
+          })
+        )}
       </FeatureGate>
     </ScrollView>
   );
@@ -254,5 +281,10 @@ const styles = StyleSheet.create({
     alignItems: 'center', marginTop: 14,
   },
   peakMomentBtnText: { color: colors.deep, fontWeight: '800', fontSize: 14 },
+  reportBtn: {
+    backgroundColor: 'rgba(26,138,181,0.15)', borderWidth: 1, borderColor: 'rgba(26,138,181,0.3)',
+    paddingVertical: 8, borderRadius: 10, alignItems: 'center', marginTop: 10,
+  },
+  reportBtnText: { color: colors.accent, fontWeight: '700', fontSize: 13 },
   emptyText: { color: 'rgba(205,232,240,0.4)', fontSize: 13, textAlign: 'center', marginTop: 20 },
 });

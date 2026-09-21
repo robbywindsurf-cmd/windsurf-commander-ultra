@@ -16,6 +16,7 @@ import { registerWebView, handleWebViewMessage, disposeDetector } from '../utils
 import { MOVENET_HTML } from '../utils/movenetWebView.js';
 import { GPMF_HTML } from '../utils/gpmfWebView.js';
 import { registerGPMFWebView, handleGPMFMessage, extractVideoStartTime, disposeGPMF } from '../utils/gpmfExtractor.js';
+import { extractMp4CreationTime } from '../utils/mp4CreationTime.js';
 import { colors } from '../theme';
 
 const DEEP = colors.deep;
@@ -29,6 +30,30 @@ const VIDEOS_DIR = FileSystem.documentDirectory + 'imported_videos/';
 
 function isVideo360(fname) {
   return (fname || '').toLowerCase().endsWith('.360');
+}
+
+// GPMF binary extraction only works on the raw, unmodified .360 file — the
+// documented Mac workflow (gopro2gpx + GoPro Player export) explicitly
+// exists because GoPro Player strips that metadata on export, and instead
+// embeds the UTC start time (already extracted on the Mac, before export)
+// into the exported filename. Two documented conventions:
+//   - Mac workflow:  "..._export_20260625T143140Z_description.mp4"
+//   - GoPro Labs:    "WS-20260625143140-0001.MP4"
+// Checked before GPMF binary extraction, since a Mac-exported file's
+// metadata is already known-stripped and not worth a (slow, occasionally
+// unreliable) WebView parse attempt when the answer is right there in the
+// filename.
+function extractUtcFromFilename(fname) {
+  const macMatch = (fname || '').match(/_export_(\d{8}T\d{6}Z)_/);
+  if (macMatch) return macMatch[1];
+
+  const labsMatch = (fname || '').match(/WS-(\d{14})-/);
+  if (labsMatch) {
+    const raw = labsMatch[1];
+    return `${raw.slice(0, 8)}T${raw.slice(8, 14)}Z`;
+  }
+
+  return null;
 }
 
 async function ensureVideosDir() {
@@ -68,6 +93,7 @@ export default function VideoScreen({ navigation }) {
   const [importedVideos, setImportedVideos] = useState([]);
   const [pendingImport, setPendingImport]   = useState(null);
   const [pickerError, setPickerError]       = useState(null);
+  const [repairResult, setRepairResult]     = useState(null);
   const [allSessions, setAllSessions]       = useState([]);
   const [importingFile, setImportingFile]   = useState(null);
 
@@ -187,8 +213,28 @@ export default function VideoScreen({ navigation }) {
       setImportingFile({ fname, progress: 0.05, status: '📍 Extracting GPS data…' });
       await new Promise(r => setTimeout(r, 80));
 
-      const gpmfResult = await extractVideoStartTime(uri);
-      const videoStartUtc = gpmfResult?.videoStartUtc || null;
+      // Priority: filename (Mac-process convention, already human-verified)
+      // > GPMF GPSU (real satellite-derived UTC, read from the START of
+      // the file where the earliest telemetry samples live — same source
+      // the Garmin watch's own timestamps come from, so no clock-drift
+      // concern) > MP4 mvhd.creation_time, kept only as a last-resort
+      // fallback for files with no GPS fix at all — it's just the
+      // camera's own internal clock, not satellite time, and drifts like
+      // any ordinary quartz clock.
+      const filenameUtc = extractUtcFromFilename(fname);
+      let videoStartUtc = filenameUtc;
+      let utcSource = filenameUtc ? 'filename' : null;
+      if (!videoStartUtc) {
+        videoStartUtc = (await extractVideoStartTime(uri))?.videoStartUtc || null;
+        if (videoStartUtc) utcSource = 'gpmf_gpsu';
+      }
+      if (!videoStartUtc) {
+        videoStartUtc = await extractMp4CreationTime(uri);
+        if (videoStartUtc) utcSource = 'mvhd.creation_time (camera clock — no GPS fix found)';
+      }
+      if (videoStartUtc) {
+        console.log('[VideoScreen] UTC start time:', videoStartUtc, `(source: ${utcSource})`);
+      }
 
       await ensureVideosDir();
 
@@ -284,6 +330,31 @@ export default function VideoScreen({ navigation }) {
   }
 
   function cancelImport() { setPendingImport(null); }
+
+  // Retrofits video_start_utc (and re-runs session matching) onto videos
+  // imported before filename-based UTC extraction existed — that value is
+  // computed once at import time and never revisited otherwise, so an
+  // already-imported video would keep a stale null forever without this.
+  async function repairVideoTimestamps() {
+    let changed = 0;
+    const updated = importedVideos.map((v) => {
+      if (v.video_start_utc) return v;
+      const filenameUtc = extractUtcFromFilename(v.fname);
+      if (!filenameUtc) return v;
+      changed += 1;
+      const matched = v.session_id ? null : autoMatchSession(filenameUtc, allSessions);
+      return {
+        ...v,
+        video_start_utc: filenameUtc,
+        ...(matched ? { session_id: matched.session_id, sessionName: matched.name, date: matched.date } : {}),
+      };
+    });
+    if (changed > 0) {
+      setImportedVideos(updated);
+      await saveVideos(updated);
+    }
+    return changed;
+  }
 
   async function deleteVideo(index) {
     const video = importedVideos[index];
@@ -388,6 +459,24 @@ export default function VideoScreen({ navigation }) {
           <Text style={styles.importBtnText}>📁 Import Video from Files</Text>
         </TouchableOpacity>
         {!!pickerError && <Text style={styles.errorText}>⚠️ {pickerError}</Text>}
+
+        {importedVideos.some((v) => !v.video_start_utc) && (
+          <TouchableOpacity
+            activeOpacity={0.7}
+            style={styles.repairBtn}
+            onPress={async () => {
+              const n = await repairVideoTimestamps();
+              setRepairResult(n);
+            }}
+          >
+            <Text style={styles.repairBtnText}>🔧 Fix GPS Timestamps on Existing Videos</Text>
+          </TouchableOpacity>
+        )}
+        {repairResult != null && (
+          <Text style={styles.repairResultText}>
+            {repairResult > 0 ? `✅ Fixed ${repairResult} video${repairResult === 1 ? '' : 's'}` : 'No timestamps found in filenames to fix'}
+          </Text>
+        )}
 
         {activeVideo && (
           <View style={styles.playerWrap}>
@@ -534,6 +623,13 @@ const styles = StyleSheet.create({
     textAlign: 'center', marginTop: 40,
   },
   errorText: { color: DANGER, fontSize: 12, textAlign: 'center', marginTop: 8 },
+  repairBtn: {
+    paddingVertical: 10, backgroundColor: 'rgba(240,165,0,0.15)',
+    borderWidth: 1, borderColor: 'rgba(240,165,0,0.3)',
+    borderRadius: 10, alignItems: 'center', marginBottom: 8,
+  },
+  repairBtnText: { color: ACCENT, fontSize: 13, fontWeight: '600' },
+  repairResultText: { color: TEXT, fontSize: 12, textAlign: 'center', marginBottom: 8 },
 
   playerWrap: {
     backgroundColor: 'rgba(26,138,181,0.08)',

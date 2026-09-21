@@ -13,6 +13,9 @@
       "usesAppleSignIn": false,
       "bundleIdentifier": "com.anonymous.windsurf-commander-ultra",
       "infoPlist": {
+        "UIApplicationSceneManifest": {
+          "UIApplicationSupportsMultipleScenes": false
+        },
         "NSPhotoLibraryUsageDescription": "Windsurf Commander needs access to your photos to analyse your windsurfing videos and save Peak Moment cards.",
         "NSPhotoLibraryAddUsageDescription": "Save your Peak Moment to Photos",
         "NSCameraUsageDescription": "Windsurf Commander needs camera access for live pose analysis.",

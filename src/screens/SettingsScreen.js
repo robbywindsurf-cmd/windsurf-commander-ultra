@@ -7,6 +7,7 @@ import { RameHeadWindService } from '../services/RameHeadWindService';
 import { HrBackfillService } from '../services/HrBackfillService';
 import { AnalysisRepository, EmbeddingService, TierService, canAccess, LocalAI, getDb, SummaryService } from '@commandersuite/core';
 import { colors } from '../theme';
+import { formatLocalTime } from '../utils/videoUtc';
 
 const DEEP = colors.deep;
 const SKY = colors.accent;
@@ -460,7 +461,7 @@ export default function SettingsScreen({ navigation }) {
       <Text style={styles.sectionLabel}>📊 AI Context Summaries</Text>
       <SharedCard style={styles.previewCard}>
         <Text style={styles.previewName}>
-          {summariesComputedAt ? `Last computed: ${summariesComputedAt}` : 'Not computed yet'}
+          {summariesComputedAt ? `Last computed: ${formatLocalTime(summariesComputedAt)}` : 'Not computed yet'}
         </Text>
         <Text style={styles.previewSize}>
           Pre-computed year-by-year and recent-form stats the AI coach reads from, instead of re-deriving them from every session on each question.
@@ -496,7 +497,7 @@ export default function SettingsScreen({ navigation }) {
                   </Text>
                 </View>
                 {indexStatus.lastIndexedAt && (
-                  <Text style={styles.previewSize}>Last indexed: {indexStatus.lastIndexedAt}</Text>
+                  <Text style={styles.previewSize}>Last indexed: {formatLocalTime(indexStatus.lastIndexedAt)}</Text>
                 )}
                 <Text style={styles.previewSize}>
                   Embeddings run on-device via the already-downloaded Llama 3.2 3B Instruct model — first indexing may take several minutes.

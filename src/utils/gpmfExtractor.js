@@ -104,12 +104,23 @@ export async function extractVideoStartTime(fileUri) {
     const fname = fileUri.split('/').pop() || '';
     const is360 = fname.toLowerCase().endsWith('.360');
 
-    // .360 files are larger — read more to ensure moov atom is captured
-    const chunkSize = 2 * 1024 * 1024;
+    // Read from the START of the file, not the tail. GPMF telemetry
+    // samples are interleaved throughout `mdat` in recording order —
+    // `mdat` comes early in a GoPro .360's layout, with the `moov` index
+    // atom at the very end. An earlier version of this code read the tail
+    // specifically to find `moov` (true, that's where the index lives),
+    // but that conflated the index's location with where the telemetry
+    // *samples* live — reading the tail grabbed a real GPSU marker, just
+    // one from late in the recording, silently mislabelling it as the
+    // video's start time. The earliest GPSU marker — i.e. the true
+    // satellite-derived start time — is near the start of the file. 8MB
+    // (up from 2MB) gives margin past any header/thumbnail boxes before
+    // mdat's telemetry begins.
+    const chunkSize = 8 * 1024 * 1024;
     const position = 0;
     const length = Math.min(chunkSize, fileSize);
 
-    console.log('[GPMF] Reading last', Math.round(length / 1024 / 1024) + 'MB of', Math.round(fileSize / 1024 / 1024) + 'MB file:', fname);
+    console.log('[GPMF] Reading first', Math.round(length / 1024 / 1024) + 'MB of', Math.round(fileSize / 1024 / 1024) + 'MB file:', fname);
 
     const base64 = await FileSystem.readAsStringAsync(fileUri, {
       encoding: 'base64',

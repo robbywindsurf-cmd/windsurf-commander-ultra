@@ -10,7 +10,7 @@ import {
 } from 'react-native';
 import { VideoView, useVideoPlayer } from 'expo-video';
 import * as ScreenOrientation from 'expo-screen-orientation';
-import { TierService, canAccess, AnalysisRepository, WeightRepository, ForceCalculator, describeFrontLeg, describeBackLeg, describeForwardLean } from '@commandersuite/core';
+import { TierService, canAccess, AnalysisRepository, TrackpointRepository, WeightRepository, ForceCalculator, describeFrontLeg, describeBackLeg, describeForwardLean } from '@commandersuite/core';
 import { analyseSessionVideo } from '../utils/poseAnalysisPipeline';
 import { videoUtcPlusSeconds } from '../utils/videoUtc';
 import { colors } from '../theme';
@@ -75,6 +75,7 @@ export default function ClipSelectorScreen({ route, navigation }) {
   const [userTier, setUserTier]               = useState('free');
   const [summary, setSummary]                 = useState(null);
   const [frameGps, setFrameGps]               = useState(null); // { speed_kn, hr } | null for the current reviewIndex
+  const [gpsCoverage, setGpsCoverage]         = useState(undefined); // { count, first_ts, last_ts } | undefined while loading
   const [riderWeightKg, setRiderWeightKg]     = useState(null); // most recent weight_log entry, or null (ForceCalculator defaults to 75kg)
 
   useEffect(() => {
@@ -86,6 +87,13 @@ export default function ClipSelectorScreen({ route, navigation }) {
   useEffect(() => {
     TierService.getCachedTier().then(setUserTier);
   }, []);
+
+  useEffect(() => {
+    if (!sessionId) return;
+    TrackpointRepository.getCoverageForSession(sessionId)
+      .then(setGpsCoverage)
+      .catch(() => setGpsCoverage(null));
+  }, [sessionId]);
 
   useEffect(() => {
     ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
@@ -270,93 +278,125 @@ export default function ClipSelectorScreen({ route, navigation }) {
   const backLegDesc = hasPose ? describeBackLeg(reviewFrame.rightKneeAngle) : null;
   const forwardLeanDesc = hasPose && reviewFrame.backAngle != null ? describeForwardLean(reviewFrame.backAngle) : null;
 
+  // Explains *why* speed/HR are missing instead of a bare "—" — a video
+  // frame's timestamp landing outside the FIT file's actual GPS coverage
+  // (e.g. the watch was stopped before the camera was) looks identical to
+  // "no FIT file imported at all" unless this is spelled out.
+  const gpsUnavailableReason = (() => {
+    if (frameGps) return null;
+    if (gpsCoverage === undefined) return 'Checking…';
+    if (!gpsCoverage || !gpsCoverage.count) return 'No FIT file imported for this session';
+    const frameUtc = reviewFrame ? videoUtcPlusSeconds(videoStartUtc, reviewFrame.timeS) : null;
+    if (frameUtc && gpsCoverage.first_ts && gpsCoverage.last_ts &&
+        (frameUtc < gpsCoverage.first_ts || frameUtc > gpsCoverage.last_ts)) {
+      return 'Outside FIT GPS time range for this session';
+    }
+    return 'No GPS point within 3s of this frame';
+  })();
+
   return (
     <View style={styles.container}>
 
       {mode === 'review' ? (
         <View style={styles.reviewArea}>
-          {annotatedFrames[reviewIndex] ? (
-            <Image
-              source={{ uri: 'data:image/jpeg;base64,' + annotatedFrames[reviewIndex].image }}
-              style={{ flex: 1 }}
-              resizeMode="contain"
-            />
-          ) : (
-            <View style={{ flex:1, alignItems:'center', justifyContent:'center' }}>
-              <Text style={{ color: TEXT }}>No frame</Text>
-            </View>
-          )}
-
-          {hasPose && (
-            <ScrollView style={styles.analysisRow} contentContainerStyle={styles.analysisRowContent}>
-              <View style={styles.analysisCard}>
-                <Text style={styles.analysisCardTitle}>FOOT PRESSURE (estimated)</Text>
-                <View style={styles.pressureBarRow}>
-                  <Text style={styles.pressureLabel}>Front</Text>
-                  <View style={styles.pressureBarTrack}>
-                    <View style={[styles.pressureBarFill, { width: `${forceEstimate.frontFootPct}%`, backgroundColor: SKY }]} />
-                  </View>
-                  <Text style={styles.pressureValue}>{forceEstimate.frontFootPct}%  {forceEstimate.frontFootKg}kg</Text>
-                </View>
-                <View style={styles.pressureBarRow}>
-                  <Text style={styles.pressureLabel}>Back</Text>
-                  <View style={styles.pressureBarTrack}>
-                    <View style={[styles.pressureBarFill, { width: `${forceEstimate.backFootPct}%`, backgroundColor: ACCENT }]} />
-                  </View>
-                  <Text style={styles.pressureValue}>{forceEstimate.backFootPct}%  {forceEstimate.backFootKg}kg</Text>
-                </View>
-                <Text style={styles.analysisLine}>Est. fin load: ~{forceEstimate.estimatedFinLoadKg}kg</Text>
-                <Text style={styles.analysisLine}>Speed factor: {forceEstimate.speedFactor}×</Text>
-                <Text style={styles.disclaimerText}>⚠️ {forceEstimate.disclaimer}</Text>
+          <View style={styles.reviewVideoColumn}>
+            {annotatedFrames[reviewIndex] ? (
+              <Image
+                source={{ uri: 'data:image/jpeg;base64,' + annotatedFrames[reviewIndex].image }}
+                style={{ flex: 1 }}
+                resizeMode="contain"
+              />
+            ) : (
+              <View style={{ flex:1, alignItems:'center', justifyContent:'center' }}>
+                <Text style={{ color: TEXT }}>No frame</Text>
               </View>
+            )}
 
-              <View style={styles.analysisCard}>
-                <Text style={styles.analysisCardTitle}>BODY POSITION</Text>
-                <Text style={styles.analysisLine}>Front leg: {frontLegDesc ?? '—'}</Text>
-                <Text style={styles.analysisLine}>Back leg: {backLegDesc ?? '—'}</Text>
-                <Text style={styles.analysisLine}>Forward lean: {forwardLeanDesc ?? '—'}</Text>
-                <Text style={styles.analysisLine}>
-                  Speed: {frameGps?.speed_kn != null ? `${frameGps.speed_kn.toFixed(1)}kn (at this frame)` : '—'}
-                </Text>
-                <Text style={styles.analysisLine}>
-                  HR: {frameGps?.hr != null ? `${frameGps.hr}bpm (at this frame)` : '—'}
-                </Text>
+            <View style={styles.reviewControls}>
+              <Text style={styles.reviewCounter}>
+                Frame {reviewIndex + 1} / {annotatedFrames.length}
+                {frameGps ? `  ·  ${frameGps.speed_kn?.toFixed(1) ?? '—'} kn${frameGps.hr ? `  ·  ${frameGps.hr} bpm` : ''}` : ''}
+              </Text>
+              <View style={styles.reviewBtnRow}>
+                <TouchableOpacity activeOpacity={0.7}
+                  style={styles.reviewBtn}
+                  onPress={() => setReviewIndex(Math.max(0, reviewIndex - 1))}
+                >
+                  <Text style={styles.reviewBtnText}>◀ Prev</Text>
+                </TouchableOpacity>
+                <TouchableOpacity activeOpacity={0.7}
+                  style={styles.reviewBtn}
+                  onPress={() => setReviewIndex(Math.min(annotatedFrames.length - 1, reviewIndex + 1))}
+                >
+                  <Text style={styles.reviewBtnText}>Next ▶</Text>
+                </TouchableOpacity>
+                <TouchableOpacity activeOpacity={0.7}
+                  style={[styles.reviewBtn, { backgroundColor: SKY }]}
+                  onPress={goToSessionDetail}
+                >
+                  <Text style={styles.reviewBtnText}>📋 Session</Text>
+                </TouchableOpacity>
+                <TouchableOpacity activeOpacity={0.7}
+                  style={[styles.reviewBtn, { backgroundColor: DANGER }]}
+                  onPress={() => { setMode('ready'); setAnnotatedFrames([]); setCurrentFrame(null); }}
+                >
+                  <Text style={styles.reviewBtnText}>✕ Close</Text>
+                </TouchableOpacity>
               </View>
-            </ScrollView>
-          )}
-
-          <View style={styles.reviewControls}>
-            <Text style={styles.reviewCounter}>
-              Frame {reviewIndex + 1} / {annotatedFrames.length}
-              {frameGps ? `  ·  ${frameGps.speed_kn?.toFixed(1) ?? '—'} kn${frameGps.hr ? `  ·  ${frameGps.hr} bpm` : ''}` : ''}
-            </Text>
-            <View style={styles.reviewBtnRow}>
-              <TouchableOpacity activeOpacity={0.7}
-                style={styles.reviewBtn}
-                onPress={() => setReviewIndex(Math.max(0, reviewIndex - 1))}
-              >
-                <Text style={styles.reviewBtnText}>◀ Prev</Text>
-              </TouchableOpacity>
-              <TouchableOpacity activeOpacity={0.7}
-                style={styles.reviewBtn}
-                onPress={() => setReviewIndex(Math.min(annotatedFrames.length - 1, reviewIndex + 1))}
-              >
-                <Text style={styles.reviewBtnText}>Next ▶</Text>
-              </TouchableOpacity>
-              <TouchableOpacity activeOpacity={0.7}
-                style={[styles.reviewBtn, { backgroundColor: SKY }]}
-                onPress={goToSessionDetail}
-              >
-                <Text style={styles.reviewBtnText}>📋 Session</Text>
-              </TouchableOpacity>
-              <TouchableOpacity activeOpacity={0.7}
-                style={[styles.reviewBtn, { backgroundColor: DANGER }]}
-                onPress={() => { setMode('ready'); setAnnotatedFrames([]); setCurrentFrame(null); }}
-              >
-                <Text style={styles.reviewBtnText}>✕ Close</Text>
-              </TouchableOpacity>
             </View>
           </View>
+
+          {annotatedFrames.length > 0 && (
+            // Always mounted at the same fixed width regardless of whether
+            // this specific frame has pose data — the panel previously
+            // vanished entirely on frames with no detected pose (hasPose
+            // false), which let the video column beside it expand to fill
+            // the freed width, visibly resizing the video between frames.
+            <ScrollView style={styles.analysisSidePanel} contentContainerStyle={styles.analysisRowContent}>
+              {hasPose ? (
+                <>
+                  <View style={styles.analysisCard}>
+                    <Text style={styles.analysisCardTitle}>FOOT PRESSURE (estimated)</Text>
+                    <View style={styles.pressureBarRow}>
+                      <Text style={styles.pressureLabel}>Front</Text>
+                      <View style={styles.pressureBarTrack}>
+                        <View style={[styles.pressureBarFill, { width: `${forceEstimate.frontFootPct}%`, backgroundColor: SKY }]} />
+                      </View>
+                      <Text style={styles.pressureValue}>{forceEstimate.frontFootPct}%  {forceEstimate.frontFootKg}kg</Text>
+                    </View>
+                    <View style={styles.pressureBarRow}>
+                      <Text style={styles.pressureLabel}>Back</Text>
+                      <View style={styles.pressureBarTrack}>
+                        <View style={[styles.pressureBarFill, { width: `${forceEstimate.backFootPct}%`, backgroundColor: ACCENT }]} />
+                      </View>
+                      <Text style={styles.pressureValue}>{forceEstimate.backFootPct}%  {forceEstimate.backFootKg}kg</Text>
+                    </View>
+                    <Text style={styles.analysisLine}>Est. fin load: ~{forceEstimate.estimatedFinLoadKg}kg</Text>
+                    <Text style={styles.analysisLine}>Speed factor: {forceEstimate.speedFactor}×</Text>
+                    <Text style={styles.disclaimerText}>⚠️ {forceEstimate.disclaimer}</Text>
+                  </View>
+
+                  <View style={styles.analysisCard}>
+                    <Text style={styles.analysisCardTitle}>BODY POSITION</Text>
+                    <Text style={styles.analysisLine}>Front leg: {frontLegDesc ?? '—'}</Text>
+                    <Text style={styles.analysisLine}>Back leg: {backLegDesc ?? '—'}</Text>
+                    <Text style={styles.analysisLine}>Lean stance: {forwardLeanDesc ?? '—'}</Text>
+                    <Text style={styles.analysisLine}>
+                      Speed: {frameGps?.speed_kn != null ? `${frameGps.speed_kn.toFixed(1)}kn (at this frame)` : `— (${gpsUnavailableReason})`}
+                    </Text>
+                    <Text style={styles.analysisLine}>
+                      HR: {frameGps?.hr != null ? `${frameGps.hr}bpm (at this frame)` : `— (${gpsUnavailableReason})`}
+                    </Text>
+                  </View>
+                </>
+              ) : (
+                <View style={styles.analysisCard}>
+                  <Text style={styles.analysisCardTitle}>NO POSE DATA</Text>
+                  <Text style={styles.analysisLine}>Rider not clearly detected in this frame.</Text>
+                </View>
+              )}
+            </ScrollView>
+          )}
         </View>
       ) : mode === 'summary' ? (
         <View style={styles.summaryArea}>
@@ -567,7 +607,13 @@ const styles = StyleSheet.create({
   },
   statusText: { color: TEXT, fontSize: 18, fontWeight: '600' },
 
-  reviewArea: { flex: 1, backgroundColor: '#000' },
+  // Side-by-side in landscape: video (+ its controls) on the left, analysis
+  // cards in a fixed-width scrollable column on the right — previously the
+  // analysis cards were a full-width overlay up to 55% of screen height on
+  // top of the video, which on a landscape screen left only thin slivers
+  // of the actual frame visible above and below the overlay.
+  reviewArea: { flex: 1, flexDirection: 'row', backgroundColor: '#000' },
+  reviewVideoColumn: { flex: 1 },
 
   summaryArea: { flex: 1, backgroundColor: DEEP, padding: 24, justifyContent: 'center' },
   summaryTitle: { color: TEXT, fontSize: 20, fontWeight: '700', textAlign: 'center', marginBottom: 16 },
@@ -583,10 +629,11 @@ const styles = StyleSheet.create({
   upgradeBannerText: { color: ACCENT, fontSize: 13, textAlign: 'center', marginBottom: 10 },
   upgradeBannerBtn: { backgroundColor: ACCENT, paddingVertical: 8, paddingHorizontal: 20, borderRadius: 8 },
   upgradeBannerBtnText: { color: '#fff', fontWeight: '700', fontSize: 13 },
-  analysisRow: {
-    position: 'absolute', left: 0, right: 0, bottom: 90, maxHeight: '55%',
+  analysisSidePanel: {
+    width: 260, backgroundColor: 'rgba(6,31,46,0.5)',
+    borderLeftWidth: 1, borderLeftColor: 'rgba(255,255,255,0.08)',
   },
-  analysisRowContent: { padding: 10, gap: 10 },
+  analysisRowContent: { padding: 8, gap: 8 },
   analysisCard: {
     backgroundColor: 'rgba(6,31,46,0.92)', borderRadius: 10, padding: 12,
     borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)',
@@ -602,13 +649,12 @@ const styles = StyleSheet.create({
   pressureBarFill: { height: '100%', borderRadius: 5 },
   pressureValue: { color: TEXT, fontSize: 11, width: 90, textAlign: 'right' },
   reviewControls: {
-    position: 'absolute', bottom: 0, left: 0, right: 0,
-    backgroundColor: 'rgba(6,31,46,0.9)', padding: 10,
+    backgroundColor: 'rgba(6,31,46,0.9)', paddingVertical: 8, paddingHorizontal: 6,
   },
-  reviewCounter: { color: TEXT, fontSize: 12, textAlign: 'center', marginBottom: 8 },
-  reviewBtnRow:  { flexDirection: 'row', gap: 8, justifyContent: 'center' },
+  reviewCounter: { color: TEXT, fontSize: 12, textAlign: 'center', marginBottom: 6 },
+  reviewBtnRow:  { flexDirection: 'row', gap: 6, justifyContent: 'center' },
   reviewBtn: {
-    paddingVertical: 8, paddingHorizontal: 14,
+    paddingVertical: 8, paddingHorizontal: 10,
     backgroundColor: 'rgba(26,138,181,0.3)', borderRadius: 8,
   },
   reviewBtnText: { color: TEXT, fontSize: 12, fontWeight: '600' },

@@ -10,11 +10,21 @@ const MAX_DURATION_MS = 120000; // only analyse first 2 minutes
 const MAX_FRAMES = 100;         // hard cap after subsampling
 
 async function getVideoDurationMs(videoUri) {
-  // Return the max analysis window directly — expo-video-thumbnails
-  // naturally fails on timestamps beyond the actual video length,
-  // which the extraction loop already handles gracefully via try/catch.
-  // This avoids instantiating expo-av's Video imperatively (not supported).
-  return MAX_DURATION_MS;
+  // Real duration is never known here (avoids instantiating expo-av's
+  // Video imperatively, which isn't supported) — Infinity means "no real
+  // ceiling", relying on expo-video-thumbnails naturally failing on
+  // timestamps beyond the actual video length, which the extraction loop
+  // already handles gracefully via try/catch.
+  //
+  // This was previously MAX_DURATION_MS (120000) instead of Infinity —
+  // which meant windowEndMs = Math.min(120000, startMs + maxDurationMs)
+  // capped the window at a flat 2 minutes regardless of where the clip
+  // actually started. Any user-selected clip start past the 2-minute mark
+  // (e.g. starting at 2:10) made windowEndMs (120000) end up *before*
+  // startMs (130000) — the extraction loop's very first condition
+  // (t < windowEndMs) was false immediately, silently extracting zero
+  // frames every time and surfacing as "No frames could be extracted".
+  return Infinity;
 }
 
 // Extracts frames at INTERVAL_MS across the analysis window (min of full
