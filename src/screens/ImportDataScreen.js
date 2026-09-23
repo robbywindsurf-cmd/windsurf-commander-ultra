@@ -113,6 +113,14 @@ function toNumberOrNull(value) {
   return Number.isNaN(n) ? null : n;
 }
 
+// The export CSV uses the literal string "Unknown" in board/sail/fin name
+// and brand columns to mean "gear wasn't recorded for this session" — not
+// an actual piece of kit called "Unknown". Treated as blank so it never
+// creates a bogus equipment row or gets matched against real gear.
+function realValue(value) {
+  return value && value.trim().toLowerCase() !== 'unknown' ? value : null;
+}
+
 // Finds an equipment row by type + name + size within an already-fetched
 // list, inserting (and appending to the list) if it doesn't exist yet —
 // avoids re-querying getAll() for every CSV row.
@@ -122,10 +130,16 @@ function toNumberOrNull(value) {
 // a fresh "duplicate" equipment row every time size differed, including
 // every time it was simply missing. If an existing match is missing size
 // and this row has one, fill it in rather than leaving it incomplete.
+// Sessions CSV has no fin_brand column at all (only board_brand and
+// sail_brand), so `brand` is always null for a fin lookup — matching on
+// brand there would never find a real fin (which does have a brand from
+// the equipment CSV) and would create a duplicate, null-brand fin row on
+// every import. Brand is only compared when the caller actually supplied
+// one.
 async function findOrCreateEquipment(cache, type, name, brand, size) {
   if (!name) return null;
   const existing = cache.find(
-    (e) => e.type === type && e.name === name && (e.brand || null) === (brand || null)
+    (e) => e.type === type && e.name === name && (brand == null || (e.brand || null) === brand)
   );
   if (existing) {
     if (!existing.size && size) {
@@ -153,18 +167,21 @@ async function findOrCreateGearCombo(cache, boardId, sailId, finId, name) {
   );
   if (existing) return existing.id;
 
-  const result = await EquipmentRepository.insertGearCombo({ name, board_id: boardId, sail_id: sailId, fin_id: finId });
+  const result = await EquipmentRepository.insertGearCombo({ name, board_id: boardId, sail_id: sailId, fin_id: finId, source: 'auto' });
   const id = result.lastInsertRowId;
   cache.push({ id, board_id: boardId, sail_id: sailId, fin_id: finId, name });
   return id;
 }
 
 async function mapRowToSession(row, equipmentCache, gearComboCache) {
-  const boardId = await findOrCreateEquipment(equipmentCache, 'board', row.board_name, row.board_brand, row.board_size);
-  const sailId = await findOrCreateEquipment(equipmentCache, 'sail', row.sail_name, row.sail_brand, row.sail_size);
-  const finId = await findOrCreateEquipment(equipmentCache, 'fin', row.fin_name, null, row.fin_size);
+  const boardName = realValue(row.board_name);
+  const sailName = realValue(row.sail_name);
+  const finName = realValue(row.fin_name);
+  const boardId = await findOrCreateEquipment(equipmentCache, 'board', boardName, realValue(row.board_brand), row.board_size);
+  const sailId = await findOrCreateEquipment(equipmentCache, 'sail', sailName, realValue(row.sail_brand), row.sail_size);
+  const finId = await findOrCreateEquipment(equipmentCache, 'fin', finName, null, row.fin_size);
 
-  const gearComboName = [row.board_name, row.sail_name].filter(Boolean).join(' / ') || null;
+  const gearComboName = [boardName, sailName].filter(Boolean).join(' / ') || null;
   const gearComboId = await findOrCreateGearCombo(gearComboCache, boardId, sailId, finId, gearComboName);
 
   const durationMinutes = toNumberOrNull(row.duration_minutes);
@@ -670,16 +687,19 @@ export default function ImportDataScreen({ navigation }) {
         }
 
         if (existing) {
-          // Sessions first brought in via FIT import always land with
-          // gear_combo_id null (FIT files carry no board/sail data) — a
-          // later CSV import that does have gear columns is the only way
-          // to backfill it, so update gear here rather than skipping the
-          // row outright just because the session itself already exists.
-          if (!existing.gear_combo_id) {
-            const session = await mapRowToSession(row, equipmentCache, gearComboCache);
-            if (session.gear_combo_id) {
-              await SessionRepository.setGearCombo(existing.session_id, session.gear_combo_id);
-            }
+          // Always recompute gear from this row rather than only when
+          // existing.gear_combo_id is null — a session can carry a non-null
+          // but dangling id (e.g. pointing at a gear_combo row wiped by a
+          // later equipment/combos reimport), which looked "already set"
+          // but actually resolved to nothing. The CSV is the source of
+          // truth for gear on a reimport, so always reconcile it.
+          const session = await mapRowToSession(row, equipmentCache, gearComboCache);
+          console.log('[ImportDataScreen]', row.session_id, {
+            board: row.board_name, sail: row.sail_name, fin: row.fin_name,
+            computedGearComboId: session.gear_combo_id, existingGearComboId: existing.gear_combo_id,
+          });
+          if (session.gear_combo_id && session.gear_combo_id !== existing.gear_combo_id) {
+            await SessionRepository.setGearCombo(existing.session_id, session.gear_combo_id);
           }
           skipped += 1;
         } else {

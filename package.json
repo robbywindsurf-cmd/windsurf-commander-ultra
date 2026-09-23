@@ -43,12 +43,5 @@
     "ios": "expo run:ios",
     "web": "expo start --web"
   },
-  "private": true,
-  "expo": {
-    "autolinking": {
-      "exclude": [
-        "expo-apple-authentication"
-      ]
-    }
-  }
+  "private": true
 }

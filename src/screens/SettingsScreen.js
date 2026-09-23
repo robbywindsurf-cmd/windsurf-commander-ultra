@@ -8,6 +8,7 @@ import { HrBackfillService } from '../services/HrBackfillService';
 import { AnalysisRepository, EmbeddingService, TierService, canAccess, LocalAI, getDb, SummaryService } from '@commandersuite/core';
 import { colors } from '../theme';
 import { formatLocalTime } from '../utils/videoUtc';
+import { AuthService } from '../services/AuthService';
 
 const DEEP = colors.deep;
 const SKY = colors.accent;
@@ -36,6 +37,43 @@ export default function SettingsScreen({ navigation }) {
   useEffect(() => {
     WeatherBackfillService.countMissing().then(setMissingWeatherCount).catch(() => {});
   }, []);
+
+  const [account, setAccount] = useState(undefined); // undefined = loading, null = signed out
+  const [appleAvailable, setAppleAvailable] = useState(false);
+  const [signingIn, setSigningIn] = useState(false);
+  const [authError, setAuthError] = useState('');
+
+  useEffect(() => {
+    AuthService.getCurrentAccount().then(setAccount).catch(() => setAccount(null));
+    AuthService.isAppleSignInAvailable().then(setAppleAvailable).catch(() => setAppleAvailable(false));
+  }, []);
+
+  async function handleSignIn() {
+    setSigningIn(true);
+    setAuthError('');
+    try {
+      const user = await AuthService.signInWithApple();
+      if (user) setAccount({ accountId: user.account_id, email: user.account_email });
+    } catch (err) {
+      setAuthError(err.message || 'Sign-in failed.');
+    } finally {
+      setSigningIn(false);
+    }
+  }
+
+  function handleSignOut() {
+    Alert.alert('Sign out?', 'This only signs you out on this device — nothing local is deleted.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Sign Out',
+        style: 'destructive',
+        onPress: async () => {
+          await AuthService.signOut();
+          setAccount(null);
+        },
+      },
+    ]);
+  }
 
   const [missingGustCount, setMissingGustCount] = useState(null);
   const [gustBackfillRunning, setGustBackfillRunning] = useState(false);
@@ -244,6 +282,31 @@ export default function SettingsScreen({ navigation }) {
   return (
     <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" bounces={true} contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.container} style={styles.scrollBg}>
       <Header title="⚙️ Settings" />
+
+      <Text style={styles.sectionLabel}>👤 Account</Text>
+      <SharedCard style={styles.previewCard}>
+        {account === undefined ? (
+          <Text style={styles.previewName}>Checking sign-in status…</Text>
+        ) : account ? (
+          <>
+            <Text style={styles.previewName}>Signed in{account.email ? ` as ${account.email}` : ''}</Text>
+            <Text style={styles.estimateText}>Your data stays on this device — signing in just gives it an identity for future syncing.</Text>
+          </>
+        ) : (
+          <Text style={styles.previewName}>Not signed in — everything still works fully offline.</Text>
+        )}
+      </SharedCard>
+      {!!authError && <Text style={styles.errorText}>⚠️ {authError}</Text>}
+      {account === null && appleAvailable && (
+        <TouchableOpacity activeOpacity={0.7} style={styles.importBtn} onPress={handleSignIn} disabled={signingIn}>
+          <Text style={styles.importBtnText}>{signingIn ? 'Signing in…' : '🍎 Sign in with Apple'}</Text>
+        </TouchableOpacity>
+      )}
+      {!!account && (
+        <TouchableOpacity activeOpacity={0.7} style={styles.viewImportBtn} onPress={handleSignOut}>
+          <Text style={styles.viewImportBtnText}>Sign Out</Text>
+        </TouchableOpacity>
+      )}
 
       <Text style={styles.sectionLabel}>🌦️ Backfill Historical Weather</Text>
       <SharedCard style={styles.previewCard}>

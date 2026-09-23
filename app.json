@@ -10,8 +10,8 @@
     "ios": {
       "supportsTablet": true,
       "backgroundColor": "#061f2e",
-      "usesAppleSignIn": false,
-      "bundleIdentifier": "com.anonymous.windsurf-commander-ultra",
+      "usesAppleSignIn": true,
+      "bundleIdentifier": "com.commandersuite.windsurf",
       "infoPlist": {
         "UIApplicationSceneManifest": {
           "UIApplicationSupportsMultipleScenes": false
@@ -69,6 +69,7 @@
         }
       ],
       "expo-video",
+      "expo-apple-authentication",
       "llama.rn",
       "./plugins/withGoProSDK.js",
       [

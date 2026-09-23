@@ -1,13 +1,20 @@
 import React, { useCallback, useState } from 'react';
-import { ScrollView, Text, TouchableOpacity, StyleSheet, Modal, View, ActivityIndicator } from 'react-native';
+import { ScrollView, Text, TouchableOpacity, StyleSheet, Modal, View, ActivityIndicator, TextInput } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { SessionRepository, EquipmentRepository, TrackpointRepository, SummaryService } from '@commandersuite/core';
 import Header from '../components/Header';
 import SharedCard from '../components/SharedCard';
 import SessionMapPreview from '../components/SessionMapPreview';
-import { pickFitFile, importFitFile, repairLegacyTrackpoints, repairMissingDistance } from '../services/FITImporter';
+import { pickFitFile, importFitFile, repairLegacyTrackpoints, repairMissingDistance, repairMissingCourses } from '../services/FITImporter';
 import { pickSessionsCsv, importSessionsCsv } from '../services/SessionCsvImporter';
 import { colors } from '../theme';
+
+// Some imported CSV history has the literal string "Unknown" in the brand
+// column rather than leaving it blank — treat that the same as no brand
+// rather than showing "Unknown Cosmic 7.5" in the picker.
+function realBrand(brand) {
+  return brand && brand.trim().toLowerCase() !== 'unknown' ? brand : null;
+}
 
 function formatDistanceKm(distanceM) {
   return distanceM ? `${(distanceM / 1000).toFixed(1)} km` : null;
@@ -30,17 +37,32 @@ export default function SessionsScreen({ navigation }) {
   const [importResult, setImportResult] = useState(null); // { duplicate, session } | null
   const [importError, setImportError] = useState(null);
   const [gearPromptSessionId, setGearPromptSessionId] = useState(null);
+  const [equipment, setEquipment] = useState([]);
+  const [customMode, setCustomMode] = useState(false);
+  const [customBoardId, setCustomBoardId] = useState(null);
+  const [customSailId, setCustomSailId] = useState(null);
+  const [customFinId, setCustomFinId] = useState(null);
+  const [addingType, setAddingType] = useState(null); // 'board' | 'sail' | 'fin' | null
+  const [newItemName, setNewItemName] = useState('');
+  const [newItemBrand, setNewItemBrand] = useState('');
+  const [newItemSize, setNewItemSize] = useState('');
 
   const load = useCallback(async () => {
     try {
       await repairLegacyTrackpoints();
       await repairMissingDistance();
-      const [all, combos] = await Promise.all([
+      await repairMissingCourses();
+      const [all, combos, allEquipment] = await Promise.all([
         SessionRepository.getAll(),
         EquipmentRepository.getGearCombos(),
+        // includeInactive to match GarageScreen's own listing — without it
+        // this picker silently dropped any gear GarageScreen shows as
+        // inactive, so the two screens' lists never agreed.
+        EquipmentRepository.getAll(null, { includeInactive: true }),
       ]);
       setSessions(all);
       setGearCombos(Object.fromEntries(combos.map((c) => [c.id, c])));
+      setEquipment(allEquipment);
 
       const recent = all.slice(0, MAP_PREVIEW_COUNT);
       const tpEntries = await Promise.all(
@@ -99,13 +121,87 @@ export default function SessionsScreen({ navigation }) {
     }
   }
 
+  function closeGearPrompt() {
+    setGearPromptSessionId(null);
+    setCustomMode(false);
+    setCustomBoardId(null);
+    setCustomSailId(null);
+    setCustomFinId(null);
+    setAddingType(null);
+    setNewItemName('');
+    setNewItemBrand('');
+    setNewItemSize('');
+  }
+
+  function startAddingItem(type) {
+    setAddingType(type);
+    setNewItemName('');
+    setNewItemBrand('');
+    setNewItemSize('');
+  }
+
+  // Lets you add a piece of gear you don't already own an equipment row
+  // for, right from the gear-assignment prompt, instead of having to back
+  // out to the Garage tab first.
+  async function saveNewItem() {
+    if (!newItemName.trim()) return;
+    const result = await EquipmentRepository.insert({
+      type: addingType,
+      name: newItemName.trim(),
+      brand: newItemBrand.trim() || null,
+      size: newItemSize.trim() || null,
+    });
+    const id = result.lastInsertRowId;
+    const item = { id, type: addingType, name: newItemName.trim(), brand: newItemBrand.trim() || null, size: newItemSize.trim() || null };
+    setEquipment((prev) => [...prev, item]);
+    if (addingType === 'board') setCustomBoardId(id);
+    else if (addingType === 'sail') setCustomSailId(id);
+    else setCustomFinId(id);
+    setAddingType(null);
+  }
+
   async function assignGear(comboId) {
     if (gearPromptSessionId) {
       await SessionRepository.setGearCombo(gearPromptSessionId, comboId);
       await load();
     }
-    setGearPromptSessionId(null);
+    closeGearPrompt();
   }
+
+  // Builds (or reuses) a combo from individually-picked board/sail/fin —
+  // the combo picker only offers whole existing combos, which on a garage
+  // with many near-duplicate entries (imported "Fox / Addict" logged
+  // under several different fins) makes finding "my actual gear today"
+  // more a search problem than a pick-from-list one. Reuses an existing
+  // combo with the exact same board/sail/fin rather than always creating
+  // a new one.
+  async function assignCustomGear() {
+    if (!gearPromptSessionId || !customBoardId) return;
+    const existing = Object.values(gearCombos).find((c) =>
+      (c.board_id || null) === (customBoardId || null) &&
+      (c.sail_id || null) === (customSailId || null) &&
+      (c.fin_id || null) === (customFinId || null)
+    );
+    let comboId = existing?.id;
+    if (!comboId) {
+      const board = equipment.find((e) => e.id === customBoardId);
+      const sail = customSailId ? equipment.find((e) => e.id === customSailId) : null;
+      const name = [board?.name, sail?.name].filter(Boolean).join(' / ') || board?.name;
+      const result = await EquipmentRepository.insertGearCombo({
+        name, board_id: customBoardId, sail_id: customSailId, fin_id: customFinId,
+      });
+      comboId = result.lastInsertRowId;
+    }
+    await SessionRepository.setGearCombo(gearPromptSessionId, comboId);
+    await load();
+    closeGearPrompt();
+  }
+
+  // Excludes combos auto-created just to link a noisy historical CSV row
+  // (misspelled/lowercase/"Unknown" sail names etc.) to a session's
+  // gear_combo_id — the picker should only ever offer gear you actually
+  // curated (combos.csv, Garage, or this screen's own custom builder).
+  const curatedCombos = Object.values(gearCombos).filter((c) => (c.source || 'manual') === 'manual');
 
   return (
     <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" bounces={true} contentInsetAdjustmentBehavior="automatic" style={styles.scrollBg} contentContainerStyle={styles.container}>
@@ -191,23 +287,119 @@ export default function SessionsScreen({ navigation }) {
         })
       )}
 
-      <Modal statusBarTranslucent visible={!!gearPromptSessionId} animationType="slide" transparent onRequestClose={() => setGearPromptSessionId(null)}>
+      <Modal statusBarTranslucent visible={!!gearPromptSessionId} animationType="slide" transparent onRequestClose={closeGearPrompt}>
         <View style={styles.modalOverlay}>
           <View style={styles.gearPromptBox}>
             <Text style={styles.modalTitle}>Which gear did you use?</Text>
-            {Object.values(gearCombos).length === 0 ? (
-              <Text style={styles.resultText}>No gear combos yet — add one in the Garage tab.</Text>
-            ) : (
-              Object.values(gearCombos).map((c) => (
-                <TouchableOpacity activeOpacity={0.7} key={c.id} style={styles.gearOption} onPress={() => assignGear(c.id)}>
-                  <Text style={styles.gearOptionName}>{c.name}</Text>
-                  <Text style={styles.gearOptionMeta}>
-                    {[c.board_name, c.sail_name].filter(Boolean).join(' + ')}
-                  </Text>
+
+            <View style={styles.gearModeRow}>
+              <TouchableOpacity activeOpacity={0.7}
+                style={[styles.gearModeBtn, !customMode && styles.gearModeBtnActive]}
+                onPress={() => setCustomMode(false)}
+              >
+                <Text style={styles.gearModeBtnText}>Existing combo</Text>
+              </TouchableOpacity>
+              <TouchableOpacity activeOpacity={0.7}
+                style={[styles.gearModeBtn, customMode && styles.gearModeBtnActive]}
+                onPress={() => setCustomMode(true)}
+              >
+                <Text style={styles.gearModeBtnText}>🔧 Build custom</Text>
+              </TouchableOpacity>
+            </View>
+
+            {customMode ? (
+              <>
+                {['board', 'sail', 'fin'].map((type) => (
+                  <View key={type}>
+                    <Text style={styles.gearPickerLabel}>{type === 'fin' ? 'Fin (optional)' : type[0].toUpperCase() + type.slice(1)}</Text>
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.gearChipRow}>
+                      {equipment.filter((e) => e.type === type).map((e) => {
+                        const selectedId = type === 'board' ? customBoardId : type === 'sail' ? customSailId : customFinId;
+                        const setSelected = type === 'board' ? setCustomBoardId : type === 'sail' ? setCustomSailId : setCustomFinId;
+                        const selected = selectedId === e.id;
+                        return (
+                          <TouchableOpacity activeOpacity={0.7} key={e.id}
+                            style={[styles.gearChip, selected && styles.gearChipSelected]}
+                            onPress={() => setSelected(selected ? null : e.id)}
+                          >
+                            <Text style={[styles.gearChipText, selected && styles.gearChipTextSelected]}>
+                              {realBrand(e.brand) ? `${realBrand(e.brand)} ` : ''}{e.name}{e.size ? ` ${e.size}` : ''}
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                      <TouchableOpacity activeOpacity={0.7}
+                        style={[styles.gearChip, styles.gearChipAdd]}
+                        onPress={() => startAddingItem(type)}
+                      >
+                        <Text style={styles.gearChipAddText}>+ Add new</Text>
+                      </TouchableOpacity>
+                    </ScrollView>
+                    {addingType === type && (
+                      <View style={styles.addItemBox}>
+                        <TextInput
+                          style={styles.addItemInput}
+                          placeholder="Name (required)"
+                          placeholderTextColor="rgba(205,232,240,0.35)"
+                          value={newItemName}
+                          onChangeText={setNewItemName}
+                        />
+                        <View style={styles.addItemRow}>
+                          <TextInput
+                            style={[styles.addItemInput, styles.addItemInputHalf]}
+                            placeholder="Brand"
+                            placeholderTextColor="rgba(205,232,240,0.35)"
+                            value={newItemBrand}
+                            onChangeText={setNewItemBrand}
+                          />
+                          <TextInput
+                            style={[styles.addItemInput, styles.addItemInputHalf]}
+                            placeholder="Size"
+                            placeholderTextColor="rgba(205,232,240,0.35)"
+                            value={newItemSize}
+                            onChangeText={setNewItemSize}
+                          />
+                        </View>
+                        <View style={styles.addItemRow}>
+                          <TouchableOpacity activeOpacity={0.7} style={styles.addItemCancelBtn} onPress={() => setAddingType(null)}>
+                            <Text style={styles.addItemCancelBtnText}>Cancel</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity activeOpacity={0.7}
+                            style={[styles.addItemSaveBtn, !newItemName.trim() && styles.assignCustomBtnDisabled]}
+                            disabled={!newItemName.trim()}
+                            onPress={saveNewItem}
+                          >
+                            <Text style={styles.addItemSaveBtnText}>Save</Text>
+                          </TouchableOpacity>
+                        </View>
+                      </View>
+                    )}
+                  </View>
+                ))}
+                <TouchableOpacity activeOpacity={0.7}
+                  style={[styles.assignCustomBtn, !customBoardId && styles.assignCustomBtnDisabled]}
+                  disabled={!customBoardId}
+                  onPress={assignCustomGear}
+                >
+                  <Text style={styles.assignCustomBtnText}>Assign this combo</Text>
                 </TouchableOpacity>
-              ))
+              </>
+            ) : curatedCombos.length === 0 ? (
+              <Text style={styles.resultText}>No gear combos yet — add one in the Garage tab, or build a custom one above.</Text>
+            ) : (
+              <ScrollView style={styles.gearComboScroll}>
+                {curatedCombos.map((c) => (
+                  <TouchableOpacity activeOpacity={0.7} key={c.id} style={styles.gearOption} onPress={() => assignGear(c.id)}>
+                    <Text style={styles.gearOptionName}>{c.name}</Text>
+                    <Text style={styles.gearOptionMeta}>
+                      {[c.board_name, c.sail_name].filter(Boolean).join(' + ')}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
             )}
-            <TouchableOpacity activeOpacity={0.7} style={styles.skipBtn} onPress={() => setGearPromptSessionId(null)}>
+
+            <TouchableOpacity activeOpacity={0.7} style={styles.skipBtn} onPress={closeGearPrompt}>
               <Text style={styles.skipBtnText}>Skip</Text>
             </TouchableOpacity>
           </View>
@@ -255,9 +447,10 @@ const styles = StyleSheet.create({
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', alignItems: 'center', justifyContent: 'center' },
   modalTitle: { color: colors.text, fontSize: 16, fontWeight: '700', marginBottom: 12 },
   gearPromptBox: {
-    width: '85%', backgroundColor: colors.deep, borderRadius: 14, padding: 20,
+    width: '85%', maxHeight: '80%', backgroundColor: colors.deep, borderRadius: 14, padding: 20,
     borderWidth: 1, borderColor: 'rgba(26,138,181,0.25)',
   },
+  gearComboScroll: { maxHeight: 380 },
   gearOption: {
     backgroundColor: 'rgba(26,138,181,0.1)', borderWidth: 1, borderColor: 'rgba(26,138,181,0.25)',
     borderRadius: 10, padding: 12, marginBottom: 8,
@@ -266,6 +459,43 @@ const styles = StyleSheet.create({
   gearOptionMeta: { color: 'rgba(205,232,240,0.5)', fontSize: 12, marginTop: 2 },
   skipBtn: { alignItems: 'center', paddingVertical: 10, marginTop: 4 },
   skipBtnText: { color: 'rgba(205,232,240,0.5)', fontSize: 13, fontWeight: '600' },
+  gearModeRow: { flexDirection: 'row', gap: 8, marginBottom: 14 },
+  gearModeBtn: {
+    flex: 1, paddingVertical: 8, borderRadius: 8, alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.05)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)',
+  },
+  gearModeBtnActive: { backgroundColor: 'rgba(26,138,181,0.25)', borderColor: colors.accent },
+  gearModeBtnText: { color: colors.text, fontSize: 12, fontWeight: '600' },
+  gearPickerLabel: { color: 'rgba(205,232,240,0.6)', fontSize: 11, fontWeight: '700', letterSpacing: 0.5, textTransform: 'uppercase', marginBottom: 6, marginTop: 10 },
+  gearChipRow: { flexDirection: 'row' },
+  gearChip: {
+    paddingVertical: 8, paddingHorizontal: 12, borderRadius: 16, marginRight: 8,
+    backgroundColor: 'rgba(255,255,255,0.06)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)',
+  },
+  gearChipSelected: { backgroundColor: colors.accent, borderColor: colors.accent },
+  gearChipText: { color: colors.text, fontSize: 12, fontWeight: '600' },
+  gearChipTextSelected: { color: '#fff' },
+  gearChipAdd: { backgroundColor: 'transparent', borderStyle: 'dashed', borderColor: 'rgba(26,138,181,0.5)' },
+  gearChipAddText: { color: colors.accent, fontSize: 12, fontWeight: '700' },
+  addItemBox: {
+    backgroundColor: 'rgba(255,255,255,0.04)', borderRadius: 10, padding: 10, marginTop: 8,
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)',
+  },
+  addItemInput: {
+    backgroundColor: 'rgba(0,0,0,0.25)', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 8,
+    color: colors.text, fontSize: 13, marginBottom: 8,
+  },
+  addItemRow: { flexDirection: 'row', gap: 8 },
+  addItemInputHalf: { flex: 1 },
+  addItemCancelBtn: { flex: 1, paddingVertical: 9, borderRadius: 8, alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.06)' },
+  addItemCancelBtnText: { color: 'rgba(205,232,240,0.6)', fontSize: 12, fontWeight: '600' },
+  addItemSaveBtn: { flex: 1, paddingVertical: 9, borderRadius: 8, alignItems: 'center', backgroundColor: colors.accent },
+  addItemSaveBtnText: { color: '#fff', fontSize: 12, fontWeight: '700' },
+  assignCustomBtn: {
+    backgroundColor: colors.accent, paddingVertical: 12, borderRadius: 10, alignItems: 'center', marginTop: 16,
+  },
+  assignCustomBtnDisabled: { opacity: 0.4 },
+  assignCustomBtnText: { color: '#fff', fontWeight: '700', fontSize: 14 },
   modalBox: {
     width: '80%', backgroundColor: colors.deep, borderRadius: 14, padding: 20,
     alignItems: 'center', borderWidth: 1, borderColor: 'rgba(26,138,181,0.25)',

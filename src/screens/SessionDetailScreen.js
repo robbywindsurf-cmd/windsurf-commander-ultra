@@ -1,13 +1,14 @@
 import React, { useCallback, useState } from 'react';
-import { ScrollView, Text, View, StyleSheet, TouchableOpacity } from 'react-native';
+import { ScrollView, Text, View, StyleSheet, TouchableOpacity, Alert } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
-import { SessionRepository, EquipmentRepository, AnalysisRepository, TrackpointRepository, TideRepository, WeatherRepository, UserStore, FeatureGate, WindEstimator, ManoeuvreDetector, AnalyticsService } from '@commandersuite/core';
+import { SessionRepository, EquipmentRepository, AnalysisRepository, TrackpointRepository, TideRepository, WeatherRepository, BeachRepository, UserStore, FeatureGate, WindEstimator, ManoeuvreDetector, AnalyticsService } from '@commandersuite/core';
 import Header from '../components/Header';
 import SharedCard from '../components/SharedCard';
 import SessionRouteMap from '../components/SessionRouteMap';
 import TideChart from '../components/TideChart';
 import { colors } from '../theme';
 import { formatLocalTime } from '../utils/videoUtc';
+import { WeatherBackfillService } from '../services/WeatherBackfillService';
 
 export default function SessionDetailScreen({ route, navigation }) {
   const { sessionId } = route.params;
@@ -21,6 +22,9 @@ export default function SessionDetailScreen({ route, navigation }) {
   const [tideStateAtStart, setTideStateAtStart] = useState(null);
   const [weather, setWeather] = useState(null);
   const [sailingStats, setSailingStats] = useState(null); // { wind, manoeuvres, vmg } | null
+  const [fetchingWeather, setFetchingWeather] = useState(false);
+  const [weatherFetchError, setWeatherFetchError] = useState(null);
+  const [deleting, setDeleting] = useState(false);
 
   useFocusEffect(
     useCallback(() => {
@@ -46,11 +50,28 @@ export default function SessionDetailScreen({ route, navigation }) {
           let weatherRow = null;
           if (s?.date) {
             const startTimestamp = s.start_time ? `${s.date}T${s.start_time}` : s.date;
-            const favouriteBeach = await UserStore.getFavouriteBeach();
+            // Weather must be looked up by THIS session's own location, not
+            // a blanket favourite beach — otherwise every session on a given
+            // date shows whatever was cached for the favourite beach, even
+            // when the session itself was sailed somewhere else entirely.
+            const [beaches, favouriteBeach] = await Promise.all([
+              BeachRepository.getAll(),
+              UserStore.getFavouriteBeach(),
+            ]);
+            // Mirrors fetchWeatherForSession()'s own resolution exactly —
+            // a synthetic per-location label when there's no known beach
+            // nearby, not a blind fallback to the favourite beach, so this
+            // lookup finds what that fetch actually cached the row under.
+            const knownBeachName = WeatherBackfillService.nearestBeachName(beaches, s.beach_id, s.lat, s.lon);
+            const wLat = s.lat ?? favouriteBeach?.lat;
+            const wLon = s.lon ?? favouriteBeach?.lon;
+            const beachName = knownBeachName
+              || (wLat != null && wLon != null ? WeatherBackfillService.locationLabel(wLat, wLon) : favouriteBeach?.name)
+              || null;
             const [predictions, tideState, wRow] = await Promise.all([
               TideRepository.getPredictionsForDate(s.date),
               TideRepository.getTideStateAtTime(startTimestamp),
-              favouriteBeach ? WeatherRepository.getForBeach(favouriteBeach.name, s.date) : null,
+              beachName ? WeatherRepository.getForBeach(beachName, s.date) : null,
             ]);
             weatherRow = wRow;
             if (!cancelled) {
@@ -68,15 +89,16 @@ export default function SessionDetailScreen({ route, navigation }) {
               if (cancelled) return;
               const wind = WindEstimator.estimateFromTrackpoints(fullTp);
 
-              // Fall back to the beach's forecast wind direction (weather_cache,
-              // via WeatherRepository) when the GPS estimate's confidence is
-              // low/none — there's no per-session wind_direction column on
-              // `sessions` itself, this is the same "stored" wind data the
-              // Weather card above already displays.
-              const windFromDeg = (wind.confidence === 'high' || wind.confidence === 'medium')
-                ? wind.windFromDeg
-                : weatherRow?.best_wind_dir ?? null;
-              const windSource = (wind.confidence === 'high' || wind.confidence === 'medium')
+              // WindEstimator only returns null for 'none' confidence (too
+              // few GPS points, or no clear beating pattern) — 'low' still
+              // carries a real estimate, just a less certain one, and
+              // shouldn't be thrown away in favour of stored weather data
+              // (which is frequently unset for a session with no manual
+              // weather fetch yet). Fall back to the beach's forecast wind
+              // direction (weather_cache, via WeatherRepository) only when
+              // there's truly no GPS-based estimate at all.
+              const windFromDeg = wind.windFromDeg != null ? wind.windFromDeg : weatherRow?.best_wind_dir ?? null;
+              const windSource = wind.windFromDeg != null
                 ? 'gps_estimated'
                 : weatherRow?.best_wind_dir != null
                   ? 'stored'
@@ -95,6 +117,42 @@ export default function SessionDetailScreen({ route, navigation }) {
       return () => { cancelled = true; };
     }, [sessionId])
   );
+
+  async function fetchHistoricalWeather() {
+    if (!session) return;
+    setFetchingWeather(true);
+    setWeatherFetchError(null);
+    try {
+      const row = await WeatherBackfillService.fetchWeatherForSession(session);
+      setWeather(row || null);
+    } catch (err) {
+      setWeatherFetchError(err.message || 'Could not fetch weather for this session.');
+    } finally {
+      setFetchingWeather(false);
+    }
+  }
+
+  function confirmDeleteSession() {
+    Alert.alert(
+      'Delete this session?',
+      'This permanently removes the session, its GPS track, video analyses, coaching reports and peak moments. This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Delete', style: 'destructive', onPress: doDeleteSession },
+      ]
+    );
+  }
+
+  async function doDeleteSession() {
+    setDeleting(true);
+    try {
+      await SessionRepository.delete(sessionId);
+      navigation.goBack();
+    } catch (err) {
+      setDeleting(false);
+      Alert.alert('Delete failed', err.message || 'Could not delete this session.');
+    }
+  }
 
   if (!session) {
     return (
@@ -166,11 +224,19 @@ export default function SessionDetailScreen({ route, navigation }) {
             <Text style={styles.row}>🌡️ {weather.temperature_c != null ? `${Math.round(weather.temperature_c)}°C` : '—'}</Text>
           </>
         ) : (
-          <TouchableOpacity activeOpacity={0.7} onPress={() => navigation.navigate('ImportData')}>
-            <Text style={styles.emptyText}>
-              No weather data for this date — run "Backfill Historical Weather" from Import Data
-            </Text>
-          </TouchableOpacity>
+          <>
+            <Text style={styles.emptyText}>No weather data for this date.</Text>
+            {!!weatherFetchError && <Text style={styles.errorText}>⚠️ {weatherFetchError}</Text>}
+            <TouchableOpacity activeOpacity={0.7}
+              style={styles.fetchWeatherBtn}
+              onPress={fetchHistoricalWeather}
+              disabled={fetchingWeather}
+            >
+              <Text style={styles.fetchWeatherBtnText}>
+                {fetchingWeather ? 'Fetching…' : '🌦️ Fetch Historical Weather'}
+              </Text>
+            </TouchableOpacity>
+          </>
         )}
       </SharedCard>
 
@@ -263,6 +329,14 @@ export default function SessionDetailScreen({ route, navigation }) {
           })
         )}
       </FeatureGate>
+
+      <TouchableOpacity activeOpacity={0.7}
+        style={styles.deleteBtn}
+        onPress={confirmDeleteSession}
+        disabled={deleting}
+      >
+        <Text style={styles.deleteBtnText}>{deleting ? 'Deleting…' : '🗑️ Delete Session'}</Text>
+      </TouchableOpacity>
     </ScrollView>
   );
 }
@@ -287,4 +361,15 @@ const styles = StyleSheet.create({
   },
   reportBtnText: { color: colors.accent, fontWeight: '700', fontSize: 13 },
   emptyText: { color: 'rgba(205,232,240,0.4)', fontSize: 13, textAlign: 'center', marginTop: 20 },
+  errorText: { color: colors.danger, fontSize: 12, textAlign: 'center', marginTop: 8 },
+  fetchWeatherBtn: {
+    backgroundColor: 'rgba(26,138,181,0.15)', borderWidth: 1, borderColor: 'rgba(26,138,181,0.3)',
+    paddingVertical: 10, borderRadius: 10, alignItems: 'center', marginTop: 10,
+  },
+  fetchWeatherBtnText: { color: colors.accent, fontWeight: '700', fontSize: 13 },
+  deleteBtn: {
+    backgroundColor: 'rgba(230,57,70,0.1)', borderWidth: 1, borderColor: 'rgba(230,57,70,0.3)',
+    paddingVertical: 12, borderRadius: 12, alignItems: 'center', marginTop: 20,
+  },
+  deleteBtnText: { color: colors.danger, fontWeight: '700', fontSize: 14 },
 });

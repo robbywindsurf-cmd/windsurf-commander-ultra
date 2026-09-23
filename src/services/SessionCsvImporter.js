@@ -27,6 +27,26 @@ import Papa from 'papaparse';
 import { SessionRepository, EquipmentRepository } from '@commandersuite/core';
 
 const SPEED_MATCH_TOLERANCE_KN = 1.0;
+// Date + speed alone isn't enough to identify a session — two real
+// sessions on the same day (an AM and a PM session) can land within 1kn
+// of each other's peak speed, which silently matched a CSV row onto the
+// wrong one of the two. Start time must also be within this many minutes
+// to accept a match. A real match should differ by minutes at most
+// (export rounding) — 30 rather than a wider window, since a real AM/PM
+// pair (11:19 vs 14:18, 179 minutes apart) fell inside anything looser.
+const MAX_TIME_DIFF_MINUTES = 30;
+
+// sessions.start_time isn't a consistent format across import sources —
+// FIT-derived rows store bare "HH:MM", CSV-derived rows store a full
+// "YYYY-MM-DDTHH:MM:SS". Pulls just the time-of-day out of either, as
+// minutes since midnight.
+function timeToMinutes(timeStr) {
+  if (!timeStr) return null;
+  const timePart = timeStr.includes('T') ? timeStr.split('T')[1] : timeStr;
+  const match = timePart && timePart.match(/^(\d{2}):(\d{2})/);
+  if (!match) return null;
+  return parseInt(match[1], 10) * 60 + parseInt(match[2], 10);
+}
 
 function toNumberOrNull(value) {
   if (value === undefined || value === null || value === '') return null;
@@ -34,13 +54,28 @@ function toNumberOrNull(value) {
   return Number.isNaN(n) ? null : n;
 }
 
+// The export CSV uses the literal string "Unknown" in board/sail/fin name
+// and brand columns to mean "gear wasn't recorded for this session" — not
+// an actual piece of kit called "Unknown". Treated as blank so it never
+// creates a bogus equipment row or gets matched against real gear.
+function realValue(value) {
+  return value && value.trim().toLowerCase() !== 'unknown' ? value : null;
+}
+
 // Matches findOrCreateEquipment's own behaviour in ImportDataScreen.js —
 // duplicated rather than imported from there, since the two screens make
 // independent picks about what to do with an existing row.
+//
+// sessions_export.csv has no fin_brand column at all (only board_brand and
+// sail_brand), so `brand` is always null for a fin lookup — matching on
+// brand there would never find a real fin (which does have a brand from
+// equipment.csv) and would create a duplicate, null-brand fin row on every
+// single import. Brand is only compared when the caller actually supplied
+// one.
 async function findOrCreateEquipment(cache, type, name, brand, size) {
   if (!name) return null;
   const existing = cache.find(
-    (e) => e.type === type && e.name === name && (e.brand || null) === (brand || null)
+    (e) => e.type === type && e.name === name && (brand == null || (e.brand || null) === brand)
   );
   if (existing) {
     if (!existing.size && size) {
@@ -63,7 +98,7 @@ async function findOrCreateGearCombo(cache, boardId, sailId, finId, name) {
   );
   if (existing) return existing.id;
 
-  const result = await EquipmentRepository.insertGearCombo({ name, board_id: boardId, sail_id: sailId, fin_id: finId });
+  const result = await EquipmentRepository.insertGearCombo({ name, board_id: boardId, sail_id: sailId, fin_id: finId, source: 'auto' });
   const id = result.lastInsertRowId;
   cache.push({ id, board_id: boardId, sail_id: sailId, fin_id: finId, name });
   return id;
@@ -83,10 +118,14 @@ async function findExistingSession(row) {
   const targetSpeed = toNumberOrNull(row.peak_speed_knots);
   if (targetSpeed == null) return sameDay.length === 1 ? sameDay[0] : null;
 
+  const rowMinutes = timeToMinutes(row.start_time);
   let best = null;
   let bestDiff = Infinity;
   for (const candidate of sameDay) {
     if (candidate.max_speed_kn == null) continue;
+    const candidateMinutes = timeToMinutes(candidate.start_time);
+    if (rowMinutes != null && candidateMinutes != null &&
+        Math.abs(rowMinutes - candidateMinutes) > MAX_TIME_DIFF_MINUTES) continue;
     const diff = Math.abs(candidate.max_speed_kn - targetSpeed);
     if (diff < bestDiff) { bestDiff = diff; best = candidate; }
   }
@@ -94,10 +133,13 @@ async function findExistingSession(row) {
 }
 
 async function upsertRow(row, equipmentCache, gearComboCache) {
-  const boardId = await findOrCreateEquipment(equipmentCache, 'board', row.board_name, row.board_brand, row.board_size);
-  const sailId = await findOrCreateEquipment(equipmentCache, 'sail', row.sail_name, row.sail_brand, row.sail_size);
-  const finId = await findOrCreateEquipment(equipmentCache, 'fin', row.fin_name, null, row.fin_size);
-  const gearComboName = [row.board_name, row.sail_name].filter(Boolean).join(' / ') || null;
+  const boardName = realValue(row.board_name);
+  const sailName = realValue(row.sail_name);
+  const finName = realValue(row.fin_name);
+  const boardId = await findOrCreateEquipment(equipmentCache, 'board', boardName, realValue(row.board_brand), row.board_size);
+  const sailId = await findOrCreateEquipment(equipmentCache, 'sail', sailName, realValue(row.sail_brand), row.sail_size);
+  const finId = await findOrCreateEquipment(equipmentCache, 'fin', finName, null, row.fin_size);
+  const gearComboName = [boardName, sailName].filter(Boolean).join(' / ') || null;
   const gearComboId = await findOrCreateGearCombo(gearComboCache, boardId, sailId, finId, gearComboName);
 
   const durationMinutes = toNumberOrNull(row.duration_minutes);

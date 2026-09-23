@@ -7,6 +7,16 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// ~0.05° is roughly 5-6km at UK latitudes — close enough to call "the same
+// beach", not so wide that a session sailed somewhere else entirely gets
+// mislabelled with whatever beach happens to be nearest on record. Without
+// this cap, a single-beach `beaches` table (e.g. just "Torpoint") made
+// nearestBeachName() snap EVERY session to that name regardless of real
+// distance — which, combined with weather_cache's UNIQUE(beach_name, date)
+// constraint, could silently overwrite Torpoint's own cached weather for
+// that date with a distant session's reading.
+const MAX_BEACH_MATCH_DEG = 0.05;
+
 function nearestBeachName(beaches, beachId, lat, lon) {
   if (beachId) {
     const byId = beaches.find((b) => b.id === beachId);
@@ -24,7 +34,15 @@ function nearestBeachName(beaches, beachId, lat, lon) {
       best = b;
     }
   }
-  return best?.name ?? null;
+  if (!best || bestDist > MAX_BEACH_MATCH_DEG ** 2) return null;
+  return best.name;
+}
+
+// Synthetic weather_cache label for a session with no nearby known beach —
+// unique per location so it never collides with (and overwrites) a real
+// beach's cached weather for the same date.
+function locationLabel(lat, lon) {
+  return `Session ${lat.toFixed(3)},${lon.toFixed(3)}`;
 }
 
 async function hasWeatherForDate(date) {
@@ -142,6 +160,37 @@ async function fetchAndCacheGust(row, beach) {
 }
 
 export const WeatherBackfillService = {
+  // Exposed so SessionDetailScreen can look weather_cache up with the same
+  // beach-name resolution fetchWeatherForSession() writes it under — a
+  // session's weather must be looked up by its own lat/lon, not the
+  // user's favourite beach (which was wrongly used for every session's
+  // display regardless of where it was actually sailed).
+  nearestBeachName,
+  locationLabel,
+
+  // Single-session version of backfillAllSessions() — fetches historical
+  // weather for just this one session's own date/location (its own
+  // lat/lon when it has them, else the favourite beach), rather than
+  // requiring the bulk "X sessions missing weather" pass. Returns the
+  // freshly-cached row.
+  //
+  // Uses a synthetic per-location label (not the favourite beach's name)
+  // when the session isn't close to any known beach, so its weather never
+  // overwrites — or gets confused with — a real beach's cached reading for
+  // the same date.
+  async fetchWeatherForSession(session) {
+    const [beaches, favouriteBeach] = await Promise.all([
+      BeachRepository.getAll(),
+      UserStore.getFavouriteBeach(),
+    ]);
+    const knownBeachName = nearestBeachName(beaches, session.beach_id, session.lat, session.lon);
+    const lat = session.lat ?? favouriteBeach?.lat;
+    const lon = session.lon ?? favouriteBeach?.lon;
+    const beachName = knownBeachName || (lat != null && lon != null ? locationLabel(lat, lon) : favouriteBeach?.name);
+    await fetchAndCacheWeather(session, beachName, favouriteBeach);
+    return WeatherRepository.getForBeach(beachName, session.date);
+  },
+
   // Count of distinct session dates with no weather_cache entry at all —
   // for the "X sessions missing weather data" prompt before starting.
   async countMissing() {

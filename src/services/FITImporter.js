@@ -33,6 +33,30 @@ function toKn(mps) {
   return mps != null ? Math.round(mps * MPS_TO_KN * 10) / 10 : null;
 }
 
+// sessions.start_time isn't a consistent format across import sources —
+// FIT-derived rows store bare "HH:MM" (isoTime() above), CSV-derived rows
+// store a full "YYYY-MM-DDTHH:MM:SS". Pulls just the time-of-day out of
+// either, as minutes since midnight.
+function timeToMinutes(timeStr) {
+  if (!timeStr) return null;
+  const timePart = timeStr.includes('T') ? timeStr.split('T')[1] : timeStr;
+  const match = timePart && timePart.match(/^(\d{2}):(\d{2})/);
+  if (!match) return null;
+  return parseInt(match[1], 10) * 60 + parseInt(match[2], 10);
+}
+
+// Same-day session matching (below) previously used date + peak speed
+// alone — two genuinely different sessions on the same day (an AM and a
+// PM session) with similar top speeds would collide, silently matching
+// the second FIT import onto the first session and discarding it as
+// "already imported". Requiring start times to be close too (not just
+// the date) is what actually distinguishes them. A real match between a
+// FIT file and its own CSV row should differ by minutes at most (export
+// rounding, not clock drift between different sessions) — 30 rather than
+// the original 180 minutes, which a real AM/PM pair (11:19 vs 14:18, 179
+// minutes apart) still fell inside.
+const MAX_TIME_DIFF_MINUTES = 30;
+
 function haversineMeters(lat1, lon1, lat2, lon2) {
   const R = 6371000;
   const toRad = (d) => (d * Math.PI) / 180;
@@ -68,6 +92,37 @@ function fillMissingSpeeds(records) {
     if (!dtS) return r;
 
     return { ...r, speed: distM / dtS };
+  });
+}
+
+// GPS watches used for windsurfing generally don't write a heading/course
+// field into the FIT record at all (it's not something these devices
+// track) — course-over-ground has to be derived from consecutive GPS
+// positions instead, exactly like fillMissingSpeeds() above does for
+// speed. Without this, every trackpoint's course stayed null, which
+// silently zeroed out WindEstimator (needs course to find a tacking
+// pattern) and ManoeuvreDetector (needs course changes to find tacks and
+// gybes) for every FIT-imported session.
+function bearingDeg(lat1, lon1, lat2, lon2) {
+  const toRad = (d) => (d * Math.PI) / 180;
+  const toDeg = (r) => (r * 180) / Math.PI;
+  const dLon = toRad(lon2 - lon1);
+  const y = Math.sin(dLon) * Math.cos(toRad(lat2));
+  const x = Math.cos(toRad(lat1)) * Math.sin(toRad(lat2)) -
+    Math.sin(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.cos(dLon);
+  return (toDeg(Math.atan2(y, x)) + 360) % 360;
+}
+
+function fillMissingCourses(records) {
+  return records.map((r, i) => {
+    if (r.course != null || r.heading != null) return r;
+    if (r.position_lat == null || r.position_long == null) return r;
+
+    const prev = records[i - 1];
+    if (!prev || prev.position_lat == null || prev.position_long == null) return r;
+    if (prev.position_lat === r.position_lat && prev.position_long === r.position_long) return r;
+
+    return { ...r, course: bearingDeg(prev.position_lat, prev.position_long, r.position_lat, r.position_long) };
   });
 }
 
@@ -114,7 +169,7 @@ async function insertTrackpoints(db, sessionId, records) {
         r.position_lat ?? null,
         r.position_long ?? null,
         r.enhanced_speed ?? r.speed ?? null,
-        null,
+        r.course ?? r.heading ?? null,
         r.heart_rate ?? null,
         r.altitude ?? null,
       ]
@@ -210,6 +265,64 @@ export async function repairMissingDistance() {
   return { repaired: missing.length };
 }
 
+// Repair for trackpoints.course left null by every FIT import before the
+// fillMissingCourses() fix above — these GPS watches never write a
+// heading/course field, so course stayed null for every point of every
+// FIT-imported session, silently zeroing out WindEstimator and
+// ManoeuvreDetector (both need course to find a tacking/turning pattern)
+// for sessions that do have a real GPS track. Recomputes it as the GPS
+// bearing between consecutive points. Safe to call on every app start —
+// sessions that already have course values are left alone.
+// SessionsScreen calls repairMissingCourses() from load(), which
+// useFocusEffect can re-trigger (e.g. re-focusing the tab) before a
+// previous, still-running call has finished — two overlapping
+// db.withTransactionAsync calls on the same connection throw "cannot
+// start a transaction within a transaction" and abort load() entirely,
+// which is what made the whole session list disappear. Sharing the
+// in-flight promise across calls means a second call just waits on the
+// first instead of racing it.
+let repairInFlight = null;
+
+export async function repairMissingCourses() {
+  if (repairInFlight) return repairInFlight;
+  repairInFlight = doRepairMissingCourses().finally(() => { repairInFlight = null; });
+  return repairInFlight;
+}
+
+async function doRepairMissingCourses() {
+  const db = await getDb();
+  const missing = await db.getAllAsync(
+    "SELECT DISTINCT session_id FROM trackpoints WHERE course IS NULL AND lat IS NOT NULL AND lon IS NOT NULL"
+  );
+  if (!missing.length) return { repaired: 0 };
+
+  // One individual UPDATE per point (some sessions have several thousand)
+  // with no transaction made this take long enough that SessionsScreen's
+  // load() — which awaits this before rendering anything — looked like it
+  // had hung with an empty list. Wrapping each session's points in a
+  // single transaction is the same fix TrackpointRepository.insertBatch()
+  // already uses for bulk writes.
+  for (const { session_id } of missing) {
+    const points = await db.getAllAsync(
+      'SELECT id, lat, lon FROM trackpoints WHERE session_id = ? AND lat IS NOT NULL AND lon IS NOT NULL ORDER BY timestamp ASC',
+      [session_id]
+    );
+    if (points.length < 2) continue;
+
+    await db.withTransactionAsync(async () => {
+      for (let i = 1; i < points.length; i++) {
+        const prev = points[i - 1];
+        const cur = points[i];
+        if (prev.lat === cur.lat && prev.lon === cur.lon) continue;
+        const course = bearingDeg(prev.lat, prev.lon, cur.lat, cur.lon);
+        await db.runAsync('UPDATE trackpoints SET course = ? WHERE id = ?', [course, cur.id]);
+      }
+    });
+  }
+
+  return { repaired: missing.length };
+}
+
 // Opens the document picker restricted to .fit files. Returns the picked
 // asset ({ uri, name, size }) or null if the user cancelled.
 export async function pickFitFile() {
@@ -245,7 +358,7 @@ export async function importFitFile(asset, { onProgress } = {}) {
   const session = data.sessions?.[0];
   if (!session) throw new Error('No session data found in FIT file.');
 
-  const records = fillMissingSpeeds(data.records || []);
+  const records = fillMissingCourses(fillMissingSpeeds(data.records || []));
   const heartRates = records.map((r) => r.heart_rate).filter((v) => v != null);
 
   const maxSpeedMps = resolveSpeed(session, records, 'max');
@@ -258,17 +371,26 @@ export async function importFitFile(asset, { onProgress } = {}) {
   // sessions + gear now — a FIT file's own generated id ('fit_<timestamp>')
   // has no relation to whatever session_id that CSV carries for the same
   // real session, so look up by date + closest peak speed instead of by
-  // id. Same day + near-identical top speed is very unlikely to collide
-  // for two different sessions. Falls back to creating a bare, gear-less
-  // session (the old behaviour) when nothing matches — e.g. this session
-  // hasn't been brought in via CSV yet.
+  // id. Falls back to creating a bare, gear-less session (the old
+  // behaviour) when nothing matches — e.g. this session hasn't been
+  // brought in via CSV yet.
+  //
+  // Date + speed alone isn't enough — two real sessions on the same day
+  // (an AM and a PM session) can easily land within 1kn of each other's
+  // peak speed, which silently matched the second FIT import onto the
+  // first session and discarded it as "already imported". Start time
+  // must also be within MAX_TIME_DIFF_MINUTES to accept a match.
   let sessionId = resolveSessionId(session, records, asset);
   let matched = null;
+  const fitStartMinutes = timeToMinutes(isoTime(session.start_time));
   if (fitDate != null) {
     const sameDay = await SessionRepository.getByDate(fitDate);
     let bestDiff = Infinity;
     for (const candidate of sameDay) {
       if (candidate.max_speed_kn == null || maxSpeedKn == null) continue;
+      const candidateMinutes = timeToMinutes(candidate.start_time);
+      if (fitStartMinutes != null && candidateMinutes != null &&
+          Math.abs(fitStartMinutes - candidateMinutes) > MAX_TIME_DIFF_MINUTES) continue;
       const diff = Math.abs(candidate.max_speed_kn - maxSpeedKn);
       if (diff < bestDiff) { bestDiff = diff; matched = candidate; }
     }
