@@ -5,7 +5,7 @@ import { SessionRepository, EquipmentRepository, TrackpointRepository, SummarySe
 import Header from '../components/Header';
 import SharedCard from '../components/SharedCard';
 import SessionMapPreview from '../components/SessionMapPreview';
-import { pickFitFile, importFitFile } from '../services/FITImporter';
+import { pickFitFile, importFitFile, pickFitFiles } from '../services/FITImporter';
 import { pickSessionsCsv, importSessionsCsv } from '../services/SessionCsvImporter';
 import { colors } from '../theme';
 
@@ -96,6 +96,45 @@ export default function SessionsScreen({ navigation }) {
       if (!result.duplicate) SummaryService.refreshSummaries().catch((err) => console.warn('[Sessions] summary refresh failed:', err.message));
       await load();
       if (!result.duplicate) setGearPromptSessionId(result.sessionId);
+    } catch (err) {
+      setImporting(null);
+      setImportError(err.message || 'Import failed.');
+    }
+  }
+
+  // Batch import — no per-file gear prompt (would mean a popup per file,
+  // unworkable for a folder of dozens of FIT files); imported sessions
+  // land gear-less and get tagged afterward via the "No gear set · tap
+  // to add" affordance on each session card. One bad file doesn't abort
+  // the rest — errors are collected and shown in the summary instead.
+  async function handleImportFitBatch() {
+    setImportError(null);
+    setImportResult(null);
+    try {
+      const assets = await pickFitFiles();
+      if (!assets) return;
+
+      let imported = 0;
+      let duplicates = 0;
+      const errors = [];
+
+      for (let i = 0; i < assets.length; i++) {
+        const asset = assets[i];
+        setImporting({ status: `${asset.name} (${i + 1}/${assets.length})`, pct: i / assets.length });
+        try {
+          const result = await importFitFile(asset, {
+            onProgress: (status, pct) => setImporting({ status: `${asset.name} — ${status}`, pct: (i + pct) / assets.length }),
+          });
+          if (result.duplicate) duplicates += 1; else imported += 1;
+        } catch (err) {
+          errors.push({ file: asset.name, message: err.message });
+        }
+      }
+
+      setImporting(null);
+      setImportResult({ duplicate: false, batch: { total: assets.length, imported, duplicates, errors } });
+      if (imported > 0) SummaryService.refreshSummaries().catch((err) => console.warn('[Sessions] summary refresh failed:', err.message));
+      await load();
     } catch (err) {
       setImporting(null);
       setImportError(err.message || 'Import failed.');
@@ -219,6 +258,10 @@ export default function SessionsScreen({ navigation }) {
         <Text style={styles.importBtnSub}>GPS + trackpoints</Text>
       </TouchableOpacity>
 
+      <TouchableOpacity activeOpacity={0.7} style={styles.importHistoricalBtn} onPress={handleImportFitBatch}>
+        <Text style={styles.importHistoricalBtnText}>📥 Import Multiple FIT Files</Text>
+      </TouchableOpacity>
+
       <TouchableOpacity activeOpacity={0.7} style={styles.importBtn} onPress={handleImportSessionsCsv}>
         <Text style={styles.importBtnText}>📄 Import Sessions CSV</Text>
         <Text style={styles.importBtnSub}>Session history + gear</Text>
@@ -243,7 +286,21 @@ export default function SessionsScreen({ navigation }) {
         </SharedCard>
       )}
 
-      {importResult && !importResult.sessionsCsv && (
+      {importResult?.batch && (
+        <SharedCard>
+          <Text style={styles.resultTitle}>
+            {importResult.batch.errors.length ? '⚠️' : '✅'} {importResult.batch.imported} imported, {importResult.batch.duplicates} already had this session
+          </Text>
+          {importResult.batch.imported > 0 && (
+            <Text style={styles.resultText}>Tap "No gear set · tap to add" on each new session below to assign gear.</Text>
+          )}
+          {importResult.batch.errors.map((e) => (
+            <Text key={e.file} style={styles.errorText}>⚠️ {e.file}: {e.message}</Text>
+          ))}
+        </SharedCard>
+      )}
+
+      {importResult && !importResult.sessionsCsv && !importResult.batch && (
         <SharedCard>
           {importResult.duplicate ? (
             <Text style={styles.resultText}>⚠️ This session is already imported.</Text>

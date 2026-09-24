@@ -12,6 +12,7 @@ import { AuthService } from '../services/AuthService';
 import { IdentityService } from '../services/IdentityService';
 import { SiteAuthService } from '../services/SiteAuthService';
 import { SyncService } from '../services/SyncService';
+import { BackupService } from '../services/BackupService';
 
 const DEEP = colors.deep;
 const SKY = colors.accent;
@@ -146,6 +147,58 @@ export default function SettingsScreen({ navigation }) {
       setSyncError(e.message || 'Sync failed');
     } finally {
       setSyncRunning(false);
+    }
+  }
+
+  // Full local database backup/restore — a real safety net independent
+  // of anything else (same-bundle-ID app updates already preserve data
+  // on their own — see App.js) for the cases that aren't: human error, a
+  // future bug, or deleting the app by mistake.
+  const [backupBusy, setBackupBusy] = useState(false);
+  const [backupError, setBackupError] = useState('');
+
+  async function handleExportBackup() {
+    setBackupBusy(true);
+    setBackupError('');
+    try {
+      await BackupService.exportBackup();
+    } catch (err) {
+      setBackupError(err.message || 'Export failed.');
+    } finally {
+      setBackupBusy(false);
+    }
+  }
+
+  async function handleRestoreBackup() {
+    setBackupError('');
+    try {
+      const asset = await BackupService.pickBackupFile();
+      if (!asset) return;
+
+      Alert.alert(
+        'Restore this backup?',
+        'This replaces EVERYTHING currently in the app with the backup file — sessions, gear, weather, chat history, all of it. This cannot be undone. You must close and reopen the app afterward for it to take effect.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Restore',
+            style: 'destructive',
+            onPress: async () => {
+              setBackupBusy(true);
+              try {
+                await BackupService.restoreBackup(asset);
+                Alert.alert('Restore complete', 'Please close the app fully (swipe up in the app switcher) and reopen it now.');
+              } catch (err) {
+                setBackupError(err.message || 'Restore failed.');
+              } finally {
+                setBackupBusy(false);
+              }
+            },
+          },
+        ]
+      );
+    } catch (err) {
+      setBackupError(err.message || 'Something went wrong.');
     }
   }
 
@@ -419,6 +472,18 @@ export default function SettingsScreen({ navigation }) {
   return (
     <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" bounces={true} contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.container} style={styles.scrollBg}>
       <Header title="⚙️ Settings" />
+
+      <Text style={styles.sectionLabel}>💾 Backup & Restore</Text>
+      <SharedCard style={styles.previewCard}>
+        <Text style={styles.previewName}>Export a full copy of everything in this app, or restore from a previous export.</Text>
+      </SharedCard>
+      {!!backupError && <Text style={styles.errorText}>⚠️ {backupError}</Text>}
+      <TouchableOpacity activeOpacity={0.7} style={styles.importBtn} onPress={handleExportBackup} disabled={backupBusy}>
+        <Text style={styles.importBtnText}>{backupBusy ? 'Please wait…' : '⬆️ Export My Data'}</Text>
+      </TouchableOpacity>
+      <TouchableOpacity activeOpacity={0.7} style={styles.viewImportBtn} onPress={handleRestoreBackup} disabled={backupBusy}>
+        <Text style={styles.viewImportBtnText}>⬇️ Restore from Backup</Text>
+      </TouchableOpacity>
 
       <Text style={styles.sectionLabel}>🔒 Site Password</Text>
       <SharedCard style={styles.previewCard}>

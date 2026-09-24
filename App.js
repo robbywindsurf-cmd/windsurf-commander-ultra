@@ -6,7 +6,6 @@ import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { getDb, UserStore, TierService, EmbeddingService, WeatherRepository, LocalAI, ModelManager, SummaryService } from '@commandersuite/core';
-import { seedEquipment } from './src/utils/seedEquipment';
 import { seedBeaches } from './src/utils/seedBeaches';
 import { fetchBeachWeather, isWeatherStale } from './src/services/WeatherService';
 import FavouriteBeachPicker from './src/components/FavouriteBeachPicker';
@@ -146,7 +145,14 @@ export default function App() {
         // inside SettingsScreen.
         SiteAuthService.init().catch((err) => console.warn('[App] site auth init failed:', err.message));
         IdentityService.init().catch((err) => console.warn('[App] identity init failed:', err.message));
-        await Promise.all([seedEquipment(), seedBeaches()]);
+        // seedEquipment() removed (23 Sep) — it seeded Rob's actual gear
+        // (real board/sail names, PB notes) into every fresh install,
+        // which was fine for local dev/testing but is a real problem for
+        // a public release: a stranger downloading the app would see
+        // someone else's quiver pre-populated in their Garage. New
+        // installs now start with a genuinely empty Garage — beaches
+        // (generic location data, not personal) still seed as before.
+        await seedBeaches();
         const favourite = await UserStore.getFavouriteBeach();
         setFavouriteBeach(favourite);
         setDbReady(true);

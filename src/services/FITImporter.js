@@ -339,6 +339,25 @@ export async function pickFitFile() {
   return asset;
 }
 
+// Batch import — same idea as pickFitFile() but multi:true, so a folder
+// full of .fit files (navigate into it in the Files app, select all) can
+// be picked in one go rather than one file at a time. Non-.fit files in
+// the selection are silently dropped rather than rejecting the whole
+// pick, since a real folder of exports often has other file types mixed
+// in alongside the .fit files.
+export async function pickFitFiles() {
+  const result = await DocumentPicker.getDocumentAsync({
+    type: '*/*',
+    multiple: true,
+    copyToCacheDirectory: true,
+  });
+  if (result.canceled || !result.assets?.length) return null;
+
+  const fitAssets = result.assets.filter((a) => a.name.toLowerCase().endsWith('.fit'));
+  if (!fitAssets.length) throw new Error('No .fit files in that selection.');
+  return fitAssets;
+}
+
 // Parses a picked FIT asset and saves session + trackpoints locally.
 // onProgress(status: string, pct: 0..1) reports import progress.
 export async function importFitFile(asset, { onProgress } = {}) {

@@ -12,6 +12,7 @@
       "backgroundColor": "#061f2e",
       "usesAppleSignIn": true,
       "bundleIdentifier": "com.commandersuite.windsurf",
+      "appleTeamId": "4JG2728CZU",
       "infoPlist": {
         "UIApplicationSceneManifest": {
           "UIApplicationSupportsMultipleScenes": false
@@ -72,6 +73,7 @@
       "expo-apple-authentication",
       "llama.rn",
       "./plugins/withGoProSDK.js",
+      "./plugins/withSceneDelegateFix.js",
       [
         "expo-build-properties",
         {
