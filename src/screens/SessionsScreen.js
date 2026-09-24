@@ -5,7 +5,7 @@ import { SessionRepository, EquipmentRepository, TrackpointRepository, SummarySe
 import Header from '../components/Header';
 import SharedCard from '../components/SharedCard';
 import SessionMapPreview from '../components/SessionMapPreview';
-import { pickFitFile, importFitFile, repairLegacyTrackpoints, repairMissingDistance, repairMissingCourses } from '../services/FITImporter';
+import { pickFitFile, importFitFile } from '../services/FITImporter';
 import { pickSessionsCsv, importSessionsCsv } from '../services/SessionCsvImporter';
 import { colors } from '../theme';
 
@@ -49,9 +49,12 @@ export default function SessionsScreen({ navigation }) {
 
   const load = useCallback(async () => {
     try {
-      await repairLegacyTrackpoints();
-      await repairMissingDistance();
-      await repairMissingCourses();
+      // Legacy/course/distance repairs moved to App.js's one-time startup
+      // pass — they were being re-run here on every load() (every screen
+      // focus, every gear assignment, every import), including a full
+      // ~950k-row trackpoints scan with no index on `course`, which is
+      // what made even a simple gear assignment feel like it hung for
+      // ~20 seconds.
       const [all, combos, allEquipment] = await Promise.all([
         SessionRepository.getAll(),
         EquipmentRepository.getGearCombos(),
@@ -177,24 +180,28 @@ export default function SessionsScreen({ navigation }) {
   // a new one.
   async function assignCustomGear() {
     if (!gearPromptSessionId || !customBoardId) return;
-    const existing = Object.values(gearCombos).find((c) =>
-      (c.board_id || null) === (customBoardId || null) &&
-      (c.sail_id || null) === (customSailId || null) &&
-      (c.fin_id || null) === (customFinId || null)
-    );
-    let comboId = existing?.id;
-    if (!comboId) {
-      const board = equipment.find((e) => e.id === customBoardId);
-      const sail = customSailId ? equipment.find((e) => e.id === customSailId) : null;
-      const name = [board?.name, sail?.name].filter(Boolean).join(' / ') || board?.name;
-      const result = await EquipmentRepository.insertGearCombo({
-        name, board_id: customBoardId, sail_id: customSailId, fin_id: customFinId,
-      });
-      comboId = result.lastInsertRowId;
+    try {
+      const existing = Object.values(gearCombos).find((c) =>
+        (c.board_id || null) === (customBoardId || null) &&
+        (c.sail_id || null) === (customSailId || null) &&
+        (c.fin_id || null) === (customFinId || null)
+      );
+      let comboId = existing?.id;
+      if (!comboId) {
+        const board = equipment.find((e) => e.id === customBoardId);
+        const sail = customSailId ? equipment.find((e) => e.id === customSailId) : null;
+        const name = [board?.name, sail?.name].filter(Boolean).join(' / ') || board?.name;
+        const result = await EquipmentRepository.insertGearCombo({
+          name, board_id: customBoardId, sail_id: customSailId, fin_id: customFinId,
+        });
+        comboId = result.lastInsertRowId;
+      }
+      await SessionRepository.setGearCombo(gearPromptSessionId, comboId);
+      await load();
+      closeGearPrompt();
+    } catch (err) {
+      console.log('[SessionsScreen] assignCustomGear FAILED', err.message, err.stack);
     }
-    await SessionRepository.setGearCombo(gearPromptSessionId, comboId);
-    await load();
-    closeGearPrompt();
   }
 
   // Excludes combos auto-created just to link a noisy historical CSV row
@@ -274,11 +281,17 @@ export default function SessionsScreen({ navigation }) {
               <SharedCard>
                 <Text style={styles.title}>{s.date} {s.start_time ? `· ${s.start_time}` : ''}</Text>
                 <Text style={styles.meta}>{stats}</Text>
-                {gear && (
-                  <Text style={styles.gear}>
-                    🏄 {[gear.board_name, gear.sail_name && `${gear.sail_name}${gear.sail_size ? ` ${gear.sail_size}m` : ''}`, gear.fin_name]
-                      .filter(Boolean).join(' · ')}
-                  </Text>
+                {gear ? (
+                  <TouchableOpacity activeOpacity={0.7} onPress={() => setGearPromptSessionId(s.session_id)}>
+                    <Text style={styles.gear}>
+                      🏄 {[gear.board_name, gear.sail_name && `${gear.sail_name}${gear.sail_size ? ` ${gear.sail_size}m` : ''}`, gear.fin_name]
+                        .filter(Boolean).join(' · ')} · change
+                    </Text>
+                  </TouchableOpacity>
+                ) : (
+                  <TouchableOpacity activeOpacity={0.7} onPress={() => setGearPromptSessionId(s.session_id)}>
+                    <Text style={styles.gearMissing}>🏄 No gear set · tap to add</Text>
+                  </TouchableOpacity>
                 )}
                 {showMap && <SessionMapPreview trackpoints={trackpointsBySession[s.session_id]} onPress={goToDetail} />}
               </SharedCard>
@@ -427,6 +440,7 @@ const styles = StyleSheet.create({
   title: { color: colors.text, fontWeight: '600', fontSize: 14, marginBottom: 4 },
   meta: { color: 'rgba(205,232,240,0.5)', fontSize: 12 },
   gear: { color: colors.accent, fontSize: 11, marginTop: 6 },
+  gearMissing: { color: 'rgba(205,232,240,0.4)', fontSize: 11, marginTop: 6, fontStyle: 'italic' },
   emptyText: { color: 'rgba(205,232,240,0.4)', fontSize: 13, textAlign: 'center', marginTop: 20 },
 
   importBtn: {

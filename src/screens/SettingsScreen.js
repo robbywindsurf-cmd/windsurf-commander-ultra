@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert, TextInput } from 'react-native';
 import Header from '../components/Header';
 import SharedCard from '../components/SharedCard';
 import { WeatherBackfillService } from '../services/WeatherBackfillService';
@@ -9,6 +9,9 @@ import { AnalysisRepository, EmbeddingService, TierService, canAccess, LocalAI, 
 import { colors } from '../theme';
 import { formatLocalTime } from '../utils/videoUtc';
 import { AuthService } from '../services/AuthService';
+import { IdentityService } from '../services/IdentityService';
+import { SiteAuthService } from '../services/SiteAuthService';
+import { SyncService } from '../services/SyncService';
 
 const DEEP = colors.deep;
 const SKY = colors.accent;
@@ -70,6 +73,140 @@ export default function SettingsScreen({ navigation }) {
         onPress: async () => {
           await AuthService.signOut();
           setAccount(null);
+        },
+      },
+    ]);
+  }
+
+  // Site-wide Basic Auth nginx puts in front of every Oracle /webhook/
+  // route — a prerequisite for both AuthService and IdentityService
+  // actually reaching Oracle at all, not tied to either of them.
+  const [siteUnlocked, setSiteUnlocked] = useState(undefined); // undefined = loading
+  const [siteUsername, setSiteUsername] = useState('');
+  const [sitePassword, setSitePassword] = useState('');
+  const [siteBusy, setSiteBusy] = useState(false);
+  const [siteError, setSiteError] = useState('');
+
+  useEffect(() => {
+    setSiteUnlocked(SiteAuthService.isUnlocked());
+  }, []);
+
+  async function handleSiteUnlock() {
+    setSiteBusy(true);
+    setSiteError('');
+    try {
+      await SiteAuthService.unlock(siteUsername, sitePassword);
+      setSiteUnlocked(true);
+      setSitePassword('');
+    } catch (err) {
+      setSiteError(err.message || 'Failed to save.');
+    } finally {
+      setSiteBusy(false);
+    }
+  }
+
+  function handleSiteLock() {
+    Alert.alert('Forget site password?', 'You\'ll need to enter it again to reach Oracle.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Forget',
+        style: 'destructive',
+        onPress: async () => {
+          await SiteAuthService.lock();
+          setSiteUnlocked(false);
+        },
+      },
+    ]);
+  }
+
+  // One-way session sync, phone -> Oracle — see SyncService.js. Needs
+  // both the site password and the Oracle identity above; the button is
+  // just disabled (not hidden) until both are ready, so it's obvious what
+  // else is needed rather than the option silently not being there.
+  const [unsyncedCount, setUnsyncedCount] = useState(null);
+  const [syncRunning, setSyncRunning] = useState(false);
+  const [syncProgress, setSyncProgress] = useState({ completed: 0, total: 0 });
+  const [syncResult, setSyncResult] = useState(null);
+  const [syncError, setSyncError] = useState('');
+
+  useEffect(() => {
+    SyncService.countUnsynced().then(setUnsyncedCount).catch(() => {});
+  }, []);
+
+  async function runSync() {
+    setSyncRunning(true);
+    setSyncError('');
+    setSyncResult(null);
+    setSyncProgress({ completed: 0, total: 0 });
+    try {
+      const result = await SyncService.syncSessions((completed, total) => setSyncProgress({ completed, total }));
+      setSyncResult(result);
+      setUnsyncedCount(await SyncService.countUnsynced());
+    } catch (e) {
+      setSyncError(e.message || 'Sync failed');
+    } finally {
+      setSyncRunning(false);
+    }
+  }
+
+  function handleResetSyncState() {
+    Alert.alert(
+      'Reset sync status?',
+      'Marks every session as not-yet-synced again — use this if a previous sync run reported success but nothing actually landed on Oracle.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Reset',
+          onPress: async () => {
+            await SyncService.resetSyncState();
+            setSyncResult(null);
+            setUnsyncedCount(await SyncService.countUnsynced());
+          },
+        },
+      ]
+    );
+  }
+
+  // Oracle nickname+password identity (windsurf-native's existing
+  // register/login system) — independent of Apple Sign-In above, works
+  // today with no Apple Developer account needed. This is what session
+  // sync to Oracle will authenticate with.
+  const [identity, setIdentity] = useState(undefined); // undefined = loading, null = signed out
+  const [identityMode, setIdentityMode] = useState('login'); // 'login' | 'register'
+  const [identityNickname, setIdentityNickname] = useState('');
+  const [identityPassword, setIdentityPassword] = useState('');
+  const [identityBusy, setIdentityBusy] = useState(false);
+  const [identityError, setIdentityError] = useState('');
+
+  useEffect(() => {
+    IdentityService.getCurrentIdentity().then(setIdentity).catch(() => setIdentity(null));
+  }, []);
+
+  async function handleIdentitySubmit() {
+    setIdentityBusy(true);
+    setIdentityError('');
+    try {
+      const result = identityMode === 'register'
+        ? await IdentityService.register(identityNickname, identityPassword)
+        : await IdentityService.login(identityNickname, identityPassword);
+      setIdentity(result);
+      setIdentityPassword('');
+    } catch (err) {
+      setIdentityError(err.message || 'Something went wrong.');
+    } finally {
+      setIdentityBusy(false);
+    }
+  }
+
+  function handleIdentityLogout() {
+    Alert.alert('Log out of Oracle account?', 'This only signs you out on this device — nothing on Oracle is deleted.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Log Out',
+        style: 'destructive',
+        onPress: async () => {
+          await IdentityService.logout();
+          setIdentity(null);
         },
       },
     ]);
@@ -283,6 +420,53 @@ export default function SettingsScreen({ navigation }) {
     <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" bounces={true} contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.container} style={styles.scrollBg}>
       <Header title="⚙️ Settings" />
 
+      <Text style={styles.sectionLabel}>🔒 Site Password</Text>
+      <SharedCard style={styles.previewCard}>
+        {siteUnlocked === undefined ? (
+          <Text style={styles.previewName}>Checking…</Text>
+        ) : siteUnlocked ? (
+          <Text style={styles.previewName}>Unlocked — Oracle requests are authorized.</Text>
+        ) : (
+          <Text style={styles.previewName}>Required before either account below can reach Oracle — same login the website asks for.</Text>
+        )}
+      </SharedCard>
+      {!siteUnlocked && (
+        <>
+          <TextInput
+            style={styles.identityInput}
+            placeholder="Site username"
+            placeholderTextColor="rgba(205,232,240,0.35)"
+            autoCapitalize="none"
+            autoCorrect={false}
+            value={siteUsername}
+            onChangeText={setSiteUsername}
+          />
+          <TextInput
+            style={styles.identityInput}
+            placeholder="Site password"
+            placeholderTextColor="rgba(205,232,240,0.35)"
+            secureTextEntry
+            autoCapitalize="none"
+            autoCorrect={false}
+            value={sitePassword}
+            onChangeText={setSitePassword}
+          />
+          {!!siteError && <Text style={styles.errorText}>⚠️ {siteError}</Text>}
+          <TouchableOpacity activeOpacity={0.7}
+            style={styles.importBtn}
+            onPress={handleSiteUnlock}
+            disabled={siteBusy || !siteUsername.trim() || !sitePassword}
+          >
+            <Text style={styles.importBtnText}>{siteBusy ? 'Saving…' : 'Unlock'}</Text>
+          </TouchableOpacity>
+        </>
+      )}
+      {!!siteUnlocked && (
+        <TouchableOpacity activeOpacity={0.7} style={styles.viewImportBtn} onPress={handleSiteLock}>
+          <Text style={styles.viewImportBtnText}>Forget Site Password</Text>
+        </TouchableOpacity>
+      )}
+
       <Text style={styles.sectionLabel}>👤 Account</Text>
       <SharedCard style={styles.previewCard}>
         {account === undefined ? (
@@ -306,6 +490,135 @@ export default function SettingsScreen({ navigation }) {
         <TouchableOpacity activeOpacity={0.7} style={styles.viewImportBtn} onPress={handleSignOut}>
           <Text style={styles.viewImportBtnText}>Sign Out</Text>
         </TouchableOpacity>
+      )}
+
+      <Text style={styles.sectionLabel}>🔑 Oracle Sync Account</Text>
+      <SharedCard style={styles.previewCard}>
+        {identity === undefined ? (
+          <Text style={styles.previewName}>Checking sign-in status…</Text>
+        ) : identity ? (
+          <>
+            <Text style={styles.previewName}>Logged in as {identity.nickname}</Text>
+            <Text style={styles.estimateText}>Same nickname+password system as the website — this is what session syncing to Oracle will use.</Text>
+          </>
+        ) : (
+          <Text style={styles.previewName}>Not logged in — log in or register below to enable syncing sessions to Oracle.</Text>
+        )}
+      </SharedCard>
+      {!identity && (
+        <>
+          <View style={styles.gearModeRowSettings}>
+            <TouchableOpacity activeOpacity={0.7}
+              style={[styles.identityModeBtn, identityMode === 'login' && styles.identityModeBtnActive]}
+              onPress={() => { setIdentityMode('login'); setIdentityError(''); }}
+            >
+              <Text style={styles.identityModeBtnText}>Log In</Text>
+            </TouchableOpacity>
+            <TouchableOpacity activeOpacity={0.7}
+              style={[styles.identityModeBtn, identityMode === 'register' && styles.identityModeBtnActive]}
+              onPress={() => { setIdentityMode('register'); setIdentityError(''); }}
+            >
+              <Text style={styles.identityModeBtnText}>Register</Text>
+            </TouchableOpacity>
+          </View>
+          <TextInput
+            style={styles.identityInput}
+            placeholder="Nickname"
+            placeholderTextColor="rgba(205,232,240,0.35)"
+            autoCapitalize="none"
+            autoCorrect={false}
+            value={identityNickname}
+            onChangeText={setIdentityNickname}
+          />
+          <TextInput
+            style={styles.identityInput}
+            placeholder="Password"
+            placeholderTextColor="rgba(205,232,240,0.35)"
+            secureTextEntry
+            autoCapitalize="none"
+            autoCorrect={false}
+            value={identityPassword}
+            onChangeText={setIdentityPassword}
+          />
+          {!!identityError && <Text style={styles.errorText}>⚠️ {identityError}</Text>}
+          <TouchableOpacity activeOpacity={0.7}
+            style={styles.importBtn}
+            onPress={handleIdentitySubmit}
+            disabled={identityBusy || !identityNickname.trim() || !identityPassword}
+          >
+            <Text style={styles.importBtnText}>
+              {identityBusy ? 'Please wait…' : identityMode === 'register' ? 'Register' : 'Log In'}
+            </Text>
+          </TouchableOpacity>
+        </>
+      )}
+      {!!identity && (
+        <TouchableOpacity activeOpacity={0.7} style={styles.viewImportBtn} onPress={handleIdentityLogout}>
+          <Text style={styles.viewImportBtnText}>Log Out</Text>
+        </TouchableOpacity>
+      )}
+
+      <Text style={styles.sectionLabel}>☁️ Sync Sessions to Oracle</Text>
+      <SharedCard style={styles.previewCard}>
+        {unsyncedCount == null ? (
+          <Text style={styles.previewName}>Checking sync status…</Text>
+        ) : (
+          <Text style={styles.previewName}>
+            {unsyncedCount} session{unsyncedCount === 1 ? '' : 's'} not yet synced
+          </Text>
+        )}
+        {(!siteUnlocked || !identity) && (
+          <Text style={styles.estimateText}>Needs both Site Password and Oracle Sync Account above unlocked first.</Text>
+        )}
+      </SharedCard>
+
+      {!syncRunning && (
+        <TouchableOpacity activeOpacity={0.7} onPress={handleResetSyncState} style={{ marginBottom: 10 }}>
+          <Text style={styles.viewImportBtnText}>Reset sync status (if a previous sync didn't actually land on Oracle)</Text>
+        </TouchableOpacity>
+      )}
+
+      {!syncRunning && unsyncedCount > 0 && (
+        <TouchableOpacity activeOpacity={0.7}
+          style={styles.importBtn}
+          onPress={runSync}
+          disabled={!siteUnlocked || !identity}
+        >
+          <Text style={styles.importBtnText}>{syncResult ? '☁️ Sync Again' : '☁️ Sync to Oracle'}</Text>
+        </TouchableOpacity>
+      )}
+
+      {syncRunning && (
+        <SharedCard style={styles.progressCard}>
+          <Text style={styles.progressLabel}>Syncing sessions…</Text>
+          <View style={styles.progressTrack}>
+            <View
+              style={[
+                styles.progressFill,
+                { width: `${syncProgress.total ? Math.round((syncProgress.completed / syncProgress.total) * 100) : 0}%` },
+              ]}
+            />
+          </View>
+          <Text style={styles.progressCount}>
+            {syncProgress.completed} / {syncProgress.total} sessions
+          </Text>
+        </SharedCard>
+      )}
+
+      {!!syncError && <Text style={styles.errorText}>⚠️ {syncError}</Text>}
+
+      {syncResult && (
+        <SharedCard style={styles.resultCard}>
+          <View style={styles.resultCenter}>
+            <Text style={styles.resultIcon}>{syncResult.success ? '✅' : '⚠️'}</Text>
+            <Text style={[styles.resultTitle, { color: syncResult.success ? SAFE : ACCENT }]}>
+              {syncResult.count} session{syncResult.count === 1 ? '' : 's'} synced
+            </Text>
+            {syncResult.errors.length > 0 && (
+              <Text style={styles.resultSub}>{syncResult.errors.length} error(s) — check network and retry</Text>
+            )}
+          </View>
+        </SharedCard>
       )}
 
       <Text style={styles.sectionLabel}>🌦️ Backfill Historical Weather</Text>
@@ -649,6 +962,18 @@ const styles = StyleSheet.create({
   previewCard: { marginBottom: 12 },
   previewName: { color: TEXT, fontSize: 13, fontWeight: '600' },
   previewSize: { color: 'rgba(205,232,240,0.4)', fontSize: 10, marginTop: 2 },
+
+  gearModeRowSettings: { flexDirection: 'row', gap: 8, marginBottom: 10 },
+  identityModeBtn: {
+    flex: 1, paddingVertical: 8, borderRadius: 8, alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.05)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)',
+  },
+  identityModeBtnActive: { backgroundColor: 'rgba(26,138,181,0.25)', borderColor: SKY },
+  identityModeBtnText: { color: TEXT, fontSize: 12, fontWeight: '600' },
+  identityInput: {
+    backgroundColor: 'rgba(0,0,0,0.25)', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10,
+    color: TEXT, fontSize: 14, marginBottom: 8,
+  },
 
   statusRow: { flexDirection: 'row', alignItems: 'center' },
   statusDot: { width: 9, height: 9, borderRadius: 4.5, marginRight: 7 },

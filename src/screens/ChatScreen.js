@@ -6,7 +6,7 @@
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
-  View, Text, TextInput, TouchableOpacity, FlatList, StyleSheet,
+  View, Text, TextInput, TouchableOpacity, ScrollView, StyleSheet,
   KeyboardAvoidingView, Platform,
 } from 'react-native';
 import Markdown from 'react-native-markdown-display';
@@ -237,19 +237,19 @@ export default function ChatScreen({ navigation, route }) {
     </View>
   );
 
-  const renderItem = ({ item }) => {
+  const renderItem = (item) => {
     if (item.from === 'thinking') {
-      return <View style={[styles.bubble, styles.aiBubble]}><ThinkingDots /></View>;
+      return <View key={item.id} style={[styles.bubble, styles.aiBubble]}><ThinkingDots /></View>;
     }
     if (item.from === 'user') {
       return (
-        <View style={[styles.bubble, styles.userBubble]}>
+        <View key={item.id} style={[styles.bubble, styles.userBubble]}>
           <Text style={styles.userText}>{item.text}</Text>
         </View>
       );
     }
     return (
-      <View style={[styles.bubble, styles.aiBubble]}>
+      <View key={item.id} style={[styles.bubble, styles.aiBubble]}>
         <Markdown style={markdownStyles}>{item.text}</Markdown>
       </View>
     );
@@ -283,16 +283,25 @@ export default function ChatScreen({ navigation, route }) {
           </TouchableOpacity>
         )}
       </View>
-      <FlatList showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled"
+      <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled"
         ref={listRef}
-        data={messages}
-        keyExtractor={(i) => i.id}
-        renderItem={renderItem}
-        ListEmptyComponent={renderWelcome}
         contentContainerStyle={styles.messagesContent}
         style={styles.messagesList}
+        // Was a FlatList — react-native-markdown-display's numbered/
+        // bulleted lists (a long AI reply, e.g. "top 10 sessions") were
+        // measured with the wrong (too-short) height inside it, so
+        // FlatList's own tracked scroll range ended before the real
+        // content did — not just scrollToEnd() landing short, manual
+        // scroll gesture genuinely couldn't reach the rest either,
+        // because the ScrollView believed that was the end. A plain
+        // ScrollView measures actual rendered content directly instead
+        // of FlatList's virtualized estimate, so it doesn't have that
+        // failure mode. No virtualization here is fine — this is a
+        // personal chat history, not a large feed.
         onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: true })}
-      />
+      >
+        {messages.length === 0 ? renderWelcome() : messages.map(renderItem)}
+      </ScrollView>
       <View style={styles.inputRow}>
         <TextInput
           value={input}
@@ -315,7 +324,7 @@ export default function ChatScreen({ navigation, route }) {
 const styles = StyleSheet.create({
   flex: { flex: 1, backgroundColor: colors.deep },
   messagesList: { flex: 1, backgroundColor: colors.deep },
-  messagesContent: { padding: 14, flexGrow: 1 },
+  messagesContent: { padding: 14, paddingBottom: 24, flexGrow: 1 },
 
   modelBar: { paddingHorizontal: 14, paddingTop: 10 },
   modelBadge: {

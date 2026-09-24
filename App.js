@@ -25,6 +25,9 @@ import PeakMomentScreen from './src/screens/PeakMomentScreen';
 import StatsScreen from './src/screens/StatsScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
 import { colors } from './src/theme';
+import { SiteAuthService } from './src/services/SiteAuthService';
+import { IdentityService } from './src/services/IdentityService';
+import { repairLegacyTrackpoints, repairMissingDistance, repairMissingCourses } from './src/services/FITImporter';
 
 // The chat LLM context is a true singleton (LocalAI.js) that stays loaded
 // for the whole app session once created — backgrounding is the one
@@ -127,6 +130,22 @@ export default function App() {
         // no-op once the old file is gone, so safe to call on every launch
         // rather than tracking a "have we done this" flag.
         ModelManager.deleteOldModel().catch((err) => console.warn('[App] failed to delete old model:', err.message));
+        // Was previously re-run inside SessionsScreen's load() on every
+        // focus/gear-assignment — moved here so it happens once per app
+        // launch instead. Each of these is a fast no-op once nothing is
+        // actually missing, but the initial check itself (particularly
+        // repairMissingCourses' scan over ~950k trackpoint rows, no index
+        // on `course`) is real work that shouldn't repeat on every screen
+        // visit.
+        repairLegacyTrackpoints().catch((err) => console.warn('[App] repairLegacyTrackpoints failed:', err.message));
+        repairMissingDistance().catch((err) => console.warn('[App] repairMissingDistance failed:', err.message));
+        repairMissingCourses().catch((err) => console.warn('[App] repairMissingCourses failed:', err.message));
+        // Patches fetch with the saved site-wide Basic Auth token (if any)
+        // before anything else gets a chance to call Oracle — must happen
+        // before IdentityService/AuthService's first request, not lazily
+        // inside SettingsScreen.
+        SiteAuthService.init().catch((err) => console.warn('[App] site auth init failed:', err.message));
+        IdentityService.init().catch((err) => console.warn('[App] identity init failed:', err.message));
         await Promise.all([seedEquipment(), seedBeaches()]);
         const favourite = await UserStore.getFavouriteBeach();
         setFavouriteBeach(favourite);
