@@ -378,12 +378,15 @@ export default function ClipSelectorScreen({ route, navigation }) {
                       ) : (
                         <>
                           <Text style={styles.analysisLine}>Speed factor: {forceEstimate.speedFactor}×</Text>
-                          <Text style={styles.analysisLine}>Leg length: {forceEstimate.legLengthCm}cm ({forceEstimate.scaleFactorSource})</Text>
-                          <Text style={styles.analysisLine}>Arm span: {forceEstimate.armSpanCm}cm ({forceEstimate.scaleFactorSource})</Text>
+                          <Text style={styles.analysisLine}>Leg length: {forceEstimate.legLengthCm}cm{forceEstimate.usingDefaults ? ' (default)' : ''}</Text>
+                          <Text style={styles.analysisLine}>Arm span: {forceEstimate.armSpanCm}cm{forceEstimate.usingDefaults ? ' (default)' : ''}</Text>
                         </>
                       )}
                       {!!forceEstimate.disclaimer && (
                         <Text style={styles.disclaimerText}>⚠️ {forceEstimate.disclaimer}</Text>
+                      )}
+                      {!!forceEstimate.warning && (
+                        <Text style={styles.disclaimerText}>⚠️ {forceEstimate.warning}</Text>
                       )}
                     </View>
                   )}

@@ -5,7 +5,7 @@ import SharedCard from '../components/SharedCard';
 import { WeatherBackfillService } from '../services/WeatherBackfillService';
 import { RameHeadWindService } from '../services/RameHeadWindService';
 import { HrBackfillService } from '../services/HrBackfillService';
-import { AnalysisRepository, EmbeddingService, TierService, canAccess, LocalAI, getDb, SummaryService, BLEService, TIERS, UserStore, WeightRepository } from '@commandersuite/core';
+import { AnalysisRepository, EmbeddingService, TierService, canAccess, LocalAI, getDb, SummaryService, BLEService, TIERS, UserStore } from '@commandersuite/core';
 import { colors } from '../theme';
 import { formatLocalTime } from '../utils/videoUtc';
 import { AuthService } from '../services/AuthService';
@@ -165,69 +165,15 @@ export default function SettingsScreen({ navigation }) {
     setImuBatteryPct(BLEService.getBatteryLevel());
   }, []);
 
-  // RIDER PROFILE — height_cm/weight_kg feed ForceCalculator directly (see
-  // RiderProfileService in commander-core). Inputs are always edited/stored
-  // in cm/kg regardless of the display unit toggle — heightUnit/weightUnit
-  // only change what's rendered.
-  const [heightCm, setHeightCm] = useState(null);
-  const [heightInput, setHeightInput] = useState('');
-  const [heightUnit, setHeightUnit] = useState('cm'); // 'cm' | 'ft'
-  const [heightSaving, setHeightSaving] = useState(false);
-
-  const [latestWeight, setLatestWeight] = useState(undefined); // undefined = loading, null = none logged
-  const [weightInput, setWeightInput] = useState('');
-  const [weightUnit, setWeightUnit] = useState('kg'); // 'kg' | 'lbs'
-  const [weightSaving, setWeightSaving] = useState(false);
-  const [profileError, setProfileError] = useState('');
+  // RIDER PROFILE — full 4-measurement biometric setup now lives in its
+  // own screen (RiderProfileScreen.js, richer UI with measuring
+  // instructions and the derived category code) — this just shows status
+  // and links there. undefined = loading.
+  const [biometricCategory, setBiometricCategory] = useState(undefined);
 
   useEffect(() => {
-    UserStore.getRiderProfile().then((p) => setHeightCm(p.height_cm ?? null)).catch(() => setHeightCm(null));
-    WeightRepository.getLatest().then(setLatestWeight).catch(() => setLatestWeight(null));
+    UserStore.getBiometrics().then((b) => setBiometricCategory(b?.biometric_category ?? null)).catch(() => setBiometricCategory(null));
   }, []);
-
-  function cmToFtIn(cm) {
-    const totalInches = cm / 2.54;
-    const ft = Math.floor(totalInches / 12);
-    const inches = Math.round(totalInches % 12);
-    return `${ft}'${inches}"`;
-  }
-
-  async function handleSaveHeight() {
-    setProfileError('');
-    const raw = parseFloat(heightInput);
-    if (!raw) { setProfileError('Enter a height first.'); return; }
-    const cm = heightUnit === 'ft' ? raw * 2.54 : raw; // ft input given as decimal feet
-    if (cm < 140 || cm > 220) { setProfileError('Height should be between 140-220cm.'); return; }
-    setHeightSaving(true);
-    try {
-      await UserStore.setHeightCm(Math.round(cm * 10) / 10);
-      setHeightCm(Math.round(cm * 10) / 10);
-      setHeightInput('');
-    } catch (err) {
-      setProfileError(err.message || 'Failed to save height.');
-    } finally {
-      setHeightSaving(false);
-    }
-  }
-
-  async function handleLogWeight() {
-    setProfileError('');
-    const raw = parseFloat(weightInput);
-    if (!raw) { setProfileError('Enter a weight first.'); return; }
-    const kg = weightUnit === 'lbs' ? raw / 2.20462 : raw;
-    if (kg < 40 || kg > 150) { setProfileError('Weight should be between 40-150kg.'); return; }
-    setWeightSaving(true);
-    try {
-      await WeightRepository.insert(new Date().toISOString(), Math.round(kg * 10) / 10);
-      const latest = await WeightRepository.getLatest();
-      setLatestWeight(latest);
-      setWeightInput('');
-    } catch (err) {
-      setProfileError(err.message || 'Failed to log weight.');
-    } finally {
-      setWeightSaving(false);
-    }
-  }
 
   async function handleExportBackup() {
     setBackupBusy(true);
@@ -558,65 +504,18 @@ export default function SettingsScreen({ navigation }) {
       </TouchableOpacity>
 
       <Text style={styles.sectionLabel}>🏄 Rider Profile</Text>
-      <SharedCard style={styles.previewCard}>
-        <Text style={styles.previewName}>
-          Height: {heightCm != null ? (heightUnit === 'ft' ? cmToFtIn(heightCm) : `${heightCm}cm`) : 'Not set (using 175cm default)'}
-        </Text>
-        <View style={styles.unitToggleRow}>
-          <TouchableOpacity activeOpacity={0.7} onPress={() => setHeightUnit('cm')} style={[styles.unitToggleBtn, heightUnit === 'cm' && styles.unitToggleBtnActive]}>
-            <Text style={styles.unitToggleText}>cm</Text>
-          </TouchableOpacity>
-          <TouchableOpacity activeOpacity={0.7} onPress={() => setHeightUnit('ft')} style={[styles.unitToggleBtn, heightUnit === 'ft' && styles.unitToggleBtnActive]}>
-            <Text style={styles.unitToggleText}>ft</Text>
-          </TouchableOpacity>
-        </View>
-        <View style={styles.rowInputGroup}>
-          <TextInput
-            style={[styles.identityInput, styles.rowInput]}
-            placeholder={heightUnit === 'ft' ? 'e.g. 5.9' : 'e.g. 178'}
-            placeholderTextColor="rgba(205,232,240,0.35)"
-            keyboardType="decimal-pad"
-            value={heightInput}
-            onChangeText={setHeightInput}
-          />
-          <TouchableOpacity activeOpacity={0.7} style={[styles.importBtn, styles.rowBtn]} onPress={handleSaveHeight} disabled={heightSaving}>
-            <Text style={styles.importBtnText}>{heightSaving ? 'Saving…' : 'Save'}</Text>
-          </TouchableOpacity>
-        </View>
-
-        <Text style={[styles.previewName, { marginTop: 14 }]}>
-          Current Weight: {latestWeight?.weight_kg != null
-            ? (weightUnit === 'lbs' ? `${Math.round(latestWeight.weight_kg * 2.20462 * 10) / 10}lbs` : `${latestWeight.weight_kg}kg`)
-            : 'Not logged (using 75kg default)'}
-        </Text>
-        {latestWeight?.logged_at && (
-          <Text style={styles.imuDetailText}>Last logged: {formatLocalTime(latestWeight.logged_at)}</Text>
-        )}
-        <View style={styles.unitToggleRow}>
-          <TouchableOpacity activeOpacity={0.7} onPress={() => setWeightUnit('kg')} style={[styles.unitToggleBtn, weightUnit === 'kg' && styles.unitToggleBtnActive]}>
-            <Text style={styles.unitToggleText}>kg</Text>
-          </TouchableOpacity>
-          <TouchableOpacity activeOpacity={0.7} onPress={() => setWeightUnit('lbs')} style={[styles.unitToggleBtn, weightUnit === 'lbs' && styles.unitToggleBtnActive]}>
-            <Text style={styles.unitToggleText}>lbs</Text>
-          </TouchableOpacity>
-        </View>
-        <View style={styles.rowInputGroup}>
-          <TextInput
-            style={[styles.identityInput, styles.rowInput]}
-            placeholder={weightUnit === 'lbs' ? 'e.g. 159' : 'e.g. 72.0'}
-            placeholderTextColor="rgba(205,232,240,0.35)"
-            keyboardType="decimal-pad"
-            value={weightInput}
-            onChangeText={setWeightInput}
-          />
-          <TouchableOpacity activeOpacity={0.7} style={[styles.importBtn, styles.rowBtn]} onPress={handleLogWeight} disabled={weightSaving}>
-            <Text style={styles.importBtnText}>{weightSaving ? 'Saving…' : 'Log New Weight'}</Text>
-          </TouchableOpacity>
-        </View>
-
-        {!!profileError && <Text style={styles.errorText}>⚠️ {profileError}</Text>}
-        <Text style={styles.imuDetailText}>These are used to calculate foot pressure and fin loading accurately.</Text>
-      </SharedCard>
+      <TouchableOpacity activeOpacity={0.7} onPress={() => navigation.navigate('RiderProfile')}>
+        <SharedCard style={styles.previewCard}>
+          <Text style={styles.previewName}>🏄 Rider Profile ›</Text>
+          {biometricCategory === undefined ? (
+            <Text style={styles.imuDetailText}>Checking…</Text>
+          ) : biometricCategory ? (
+            <Text style={[styles.imuDetailText, { color: colors.green }]}>{biometricCategory}</Text>
+          ) : (
+            <Text style={[styles.imuDetailText, { color: ACCENT }]}>Not set up</Text>
+          )}
+        </SharedCard>
+      </TouchableOpacity>
 
       <Text style={styles.sectionLabel}>📡 IMU Sensor</Text>
       <SharedCard style={styles.previewCard}>
@@ -1180,16 +1079,6 @@ const styles = StyleSheet.create({
   previewCard: { marginBottom: 12 },
   previewName: { color: TEXT, fontSize: 13, fontWeight: '600' },
   imuDetailText: { color: 'rgba(205,232,240,0.6)', fontSize: 12, marginTop: 4 },
-  unitToggleRow: { flexDirection: 'row', gap: 6, marginTop: 8, marginBottom: 4 },
-  unitToggleBtn: {
-    paddingVertical: 4, paddingHorizontal: 12, borderRadius: 6,
-    backgroundColor: 'rgba(255,255,255,0.06)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)',
-  },
-  unitToggleBtnActive: { backgroundColor: 'rgba(26,138,181,0.3)', borderColor: SKY },
-  unitToggleText: { color: TEXT, fontSize: 12, fontWeight: '600' },
-  rowInputGroup: { flexDirection: 'row', gap: 8, alignItems: 'center' },
-  rowInput: { flex: 1, marginBottom: 0 },
-  rowBtn: { marginBottom: 0, paddingVertical: 10, paddingHorizontal: 14 },
   previewSize: { color: 'rgba(205,232,240,0.4)', fontSize: 10, marginTop: 2 },
 
   gearModeRowSettings: { flexDirection: 'row', gap: 8, marginBottom: 10 },

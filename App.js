@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react';
-import { StyleSheet, Text, View, InteractionManager, AppState } from 'react-native';
+import { StyleSheet, Text, View, InteractionManager, AppState, Alert } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
-import { NavigationContainer } from '@react-navigation/native';
+import { NavigationContainer, createNavigationContainerRef } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { getDb, UserStore, TierService, EmbeddingService, WeatherRepository, LocalAI, ModelManager, SummaryService } from '@commandersuite/core';
+import { getDb, UserStore, TierService, EmbeddingService, WeatherRepository, LocalAI, ModelManager, SummaryService, AnalysisRepository } from '@commandersuite/core';
 import { seedBeaches } from './src/utils/seedBeaches';
 import { fetchBeachWeather, isWeatherStale } from './src/services/WeatherService';
 import FavouriteBeachPicker from './src/components/FavouriteBeachPicker';
@@ -23,6 +23,7 @@ import ImportDataScreen from './src/screens/ImportDataScreen';
 import PeakMomentScreen from './src/screens/PeakMomentScreen';
 import StatsScreen from './src/screens/StatsScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
+import RiderProfileScreen from './src/screens/RiderProfileScreen';
 import { colors } from './src/theme';
 import { SiteAuthService } from './src/services/SiteAuthService';
 import { IdentityService } from './src/services/IdentityService';
@@ -44,6 +45,11 @@ AppState.addEventListener('change', (state) => {
 
 const Tab = createBottomTabNavigator();
 const Stack = createNativeStackNavigator();
+// Lets the first-launch biometrics prompt (below) navigate from inside the
+// dbReady useEffect, before any screen component has its own `navigation`
+// prop to call — the ref only becomes usable once NavigationContainer
+// mounts, hence the guarded isReady() check where it's used.
+const navigationRef = createNavigationContainerRef();
 
 const TAB_META = {
   Home: { icon: '🏠', label: 'Home' },
@@ -223,6 +229,37 @@ export default function App() {
             }
           });
         }
+
+        // Nudges toward setting up a biometric profile once there's a real
+        // reason to care about it (a video analysis has actually happened)
+        // — not on a rider's very first launch, when it'd just be noise
+        // before they've seen why it matters. Never blocks launch; "Later"
+        // just dismisses, nothing is forced.
+        InteractionManager.runAfterInteractions(async () => {
+          try {
+            const [hasBiometrics, lastAnalysis] = await Promise.all([
+              UserStore.hasBiometrics(),
+              AnalysisRepository.getLatestAnalysis(),
+            ]);
+            if (!hasBiometrics && lastAnalysis) {
+              Alert.alert(
+                'Add your measurements',
+                'Add your measurements for more accurate foot pressure calculations.',
+                [
+                  { text: 'Later', style: 'cancel' },
+                  {
+                    text: 'Set Up Now',
+                    onPress: () => {
+                      if (navigationRef.isReady()) navigationRef.navigate('RiderProfile');
+                    },
+                  },
+                ]
+              );
+            }
+          } catch (err) {
+            console.warn('[App] biometrics prompt check failed:', err.message);
+          }
+        });
       })
       .catch((err) => {
         console.error('[DB] Failed to initialise database', err);
@@ -253,7 +290,7 @@ export default function App() {
 
   return (
     <SafeAreaProvider>
-      <NavigationContainer>
+      <NavigationContainer ref={navigationRef}>
         <Stack.Navigator screenOptions={{ headerShown: false }}>
           <Stack.Screen name="MainTabs" component={MainTabs} />
           <Stack.Screen
@@ -267,6 +304,7 @@ export default function App() {
           <Stack.Screen name="PeakMoment" component={PeakMomentScreen} />
           <Stack.Screen name="Stats" component={StatsScreen} />
           <Stack.Screen name="Settings" component={SettingsScreen} />
+          <Stack.Screen name="RiderProfile" component={RiderProfileScreen} />
         </Stack.Navigator>
         <StatusBar style="light" />
       </NavigationContainer>
