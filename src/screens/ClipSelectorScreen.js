@@ -10,13 +10,10 @@ import {
 } from 'react-native';
 import { VideoView, useVideoPlayer } from 'expo-video';
 import * as ScreenOrientation from 'expo-screen-orientation';
-import { TierService, canAccess, AnalysisRepository, TrackpointRepository, WeightRepository, ForceCalculator, describeFrontLeg, describeBackLeg, describeForwardLean } from '@commandersuite/core';
+import { TierService, canAccess, AnalysisRepository, TrackpointRepository, describeFrontLeg, describeBackLeg, describeForwardLean } from '@commandersuite/core';
 import { analyseSessionVideo } from '../utils/poseAnalysisPipeline';
 import { videoUtcPlusSeconds } from '../utils/videoUtc';
 import { colors } from '../theme';
-
-// Matches the pipeline's frame-extraction width — see poseAnalysisPipeline.js.
-const FRAME_WIDTH = 960;
 
 async function unlockToPortrait() {
   try {
@@ -70,19 +67,12 @@ export default function ClipSelectorScreen({ route, navigation }) {
   const [analysisError, setAnalysisError]       = useState(null);
   const [currentFrame, setCurrentFrame]         = useState(null);
 
-  const [annotatedFrames, setAnnotatedFrames] = useState([]); // { image, timeS, leftKneeAngle, rightKneeAngle, backAngle, hipX }[]
+  const [annotatedFrames, setAnnotatedFrames] = useState([]); // { image, timeS, leftKneeAngle, rightKneeAngle, backAngle, forces }[]
   const [reviewIndex, setReviewIndex]         = useState(0);
   const [userTier, setUserTier]               = useState('free');
   const [summary, setSummary]                 = useState(null);
   const [frameGps, setFrameGps]               = useState(null); // { speed_kn, hr } | null for the current reviewIndex
   const [gpsCoverage, setGpsCoverage]         = useState(undefined); // { count, first_ts, last_ts } | undefined while loading
-  const [riderWeightKg, setRiderWeightKg]     = useState(null); // most recent weight_log entry, or null (ForceCalculator defaults to 75kg)
-
-  useEffect(() => {
-    WeightRepository.getAll()
-      .then((entries) => setRiderWeightKg(entries.length ? entries[entries.length - 1].weight_kg : null))
-      .catch(() => setRiderWeightKg(null));
-  }, []);
 
   useEffect(() => {
     TierService.getCachedTier().then(setUserTier);
@@ -196,7 +186,7 @@ export default function ClipSelectorScreen({ route, navigation }) {
               leftKneeAngle: frameMeasurements?.leftKneeAngle ?? null,
               rightKneeAngle: frameMeasurements?.rightKneeAngle ?? null,
               backAngle: frameMeasurements?.backAngle ?? null,
-              hipX: frameMeasurements?.hipX ?? null,
+              forces: frameMeasurements?.forces ?? null,
             }]);
           }
         },
@@ -261,18 +251,15 @@ export default function ClipSelectorScreen({ route, navigation }) {
 
   // Only meaningful when this frame actually has detected keypoints (both
   // knee angles present) — a frame where pose detection failed has nothing
-  // to estimate from.
+  // to estimate from. Forces are computed once, per frame, during analysis
+  // (poseAnalysisPipeline.js) — not recomputed here — so review always shows
+  // exactly what got persisted to frame_data.
   const reviewFrame = annotatedFrames[reviewIndex];
   const hasPose = reviewFrame && reviewFrame.leftKneeAngle != null && reviewFrame.rightKneeAngle != null;
-  const forceEstimate = hasPose
-    ? ForceCalculator.calculate({
-        leftKneeAngle: reviewFrame.leftKneeAngle,
-        rightKneeAngle: reviewFrame.rightKneeAngle,
-        hipX: reviewFrame.hipX,
-        frameWidth: FRAME_WIDTH,
-        riderWeightKg,
-        speedKn: frameGps?.speed_kn ?? 0,
-      })
+  // Foot pressure needs meaningful speed to mean anything — below 3kn it's
+  // mostly noise (drifting, standing still), so the card just doesn't show.
+  const forceEstimate = hasPose && reviewFrame.forces && (frameGps?.speed_kn ?? 0) > 3
+    ? reviewFrame.forces
     : null;
   const frontLegDesc = hasPose ? describeFrontLeg(reviewFrame.leftKneeAngle) : null;
   const backLegDesc = hasPose ? describeBackLeg(reviewFrame.rightKneeAngle) : null;
@@ -355,26 +342,51 @@ export default function ClipSelectorScreen({ route, navigation }) {
             <ScrollView style={styles.analysisSidePanel} contentContainerStyle={styles.analysisRowContent}>
               {hasPose ? (
                 <>
-                  <View style={styles.analysisCard}>
-                    <Text style={styles.analysisCardTitle}>FOOT PRESSURE (estimated)</Text>
-                    <View style={styles.pressureBarRow}>
-                      <Text style={styles.pressureLabel}>Front</Text>
-                      <View style={styles.pressureBarTrack}>
-                        <View style={[styles.pressureBarFill, { width: `${forceEstimate.frontFootPct}%`, backgroundColor: SKY }]} />
-                      </View>
-                      <Text style={styles.pressureValue}>{forceEstimate.frontFootPct}%  {forceEstimate.frontFootKg}kg</Text>
+                  {(summary?.weightIsDefault || summary?.heightIsDefault) && (
+                    <View style={styles.analysisCard}>
+                      <Text style={styles.disclaimerText}>
+                        ⚠️ Add your height and weight in Settings for more accurate pressure calculations
+                      </Text>
                     </View>
-                    <View style={styles.pressureBarRow}>
-                      <Text style={styles.pressureLabel}>Back</Text>
-                      <View style={styles.pressureBarTrack}>
-                        <View style={[styles.pressureBarFill, { width: `${forceEstimate.backFootPct}%`, backgroundColor: ACCENT }]} />
+                  )}
+
+                  {forceEstimate && (
+                    <View style={styles.analysisCard}>
+                      <Text style={styles.analysisCardTitle}>
+                        {forceEstimate.imuConnected ? 'FOOT PRESSURE (IMU ✅)' : 'FOOT PRESSURE (estimated) ⚠️'}
+                      </Text>
+                      <View style={styles.pressureBarRow}>
+                        <Text style={styles.pressureLabel}>Front</Text>
+                        <View style={styles.pressureBarTrack}>
+                          <View style={[styles.pressureBarFill, { width: `${forceEstimate.frontFootPct}%`, backgroundColor: SKY }]} />
+                        </View>
+                        <Text style={styles.pressureValue}>{forceEstimate.frontFootPct}%  {forceEstimate.frontFootKg}kg</Text>
                       </View>
-                      <Text style={styles.pressureValue}>{forceEstimate.backFootPct}%  {forceEstimate.backFootKg}kg</Text>
+                      <View style={styles.pressureBarRow}>
+                        <Text style={styles.pressureLabel}>Back</Text>
+                        <View style={styles.pressureBarTrack}>
+                          <View style={[styles.pressureBarFill, { width: `${forceEstimate.backFootPct}%`, backgroundColor: ACCENT }]} />
+                        </View>
+                        <Text style={styles.pressureValue}>{forceEstimate.backFootPct}%  {forceEstimate.backFootKg}kg</Text>
+                      </View>
+                      <Text style={styles.analysisLine}>Fin load: ~{forceEstimate.finLoadKg}kg</Text>
+                      {forceEstimate.imuConnected ? (
+                        <>
+                          <Text style={styles.analysisLine}>Peak G-force: {forceEstimate.totalGForce}G</Text>
+                          <Text style={styles.analysisLine}>Stability: {forceEstimate.stabilityPct}%</Text>
+                        </>
+                      ) : (
+                        <>
+                          <Text style={styles.analysisLine}>Speed factor: {forceEstimate.speedFactor}×</Text>
+                          <Text style={styles.analysisLine}>Leg length: {forceEstimate.legLengthCm}cm ({forceEstimate.scaleFactorSource})</Text>
+                          <Text style={styles.analysisLine}>Arm span: {forceEstimate.armSpanCm}cm ({forceEstimate.scaleFactorSource})</Text>
+                        </>
+                      )}
+                      {!!forceEstimate.disclaimer && (
+                        <Text style={styles.disclaimerText}>⚠️ {forceEstimate.disclaimer}</Text>
+                      )}
                     </View>
-                    <Text style={styles.analysisLine}>Est. fin load: ~{forceEstimate.estimatedFinLoadKg}kg</Text>
-                    <Text style={styles.analysisLine}>Speed factor: {forceEstimate.speedFactor}×</Text>
-                    <Text style={styles.disclaimerText}>⚠️ {forceEstimate.disclaimer}</Text>
-                  </View>
+                  )}
 
                   <View style={styles.analysisCard}>
                     <Text style={styles.analysisCardTitle}>BODY POSITION</Text>

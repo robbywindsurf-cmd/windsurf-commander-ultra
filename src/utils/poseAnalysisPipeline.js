@@ -4,7 +4,10 @@
 // Oracle sync, so results are written straight to commander-core's
 // AnalysisRepository instead of POSTed to windsurf-pose-coaching.
 
-import { AnalysisRepository, SessionRepository, CoachingService, UsageLimits } from '@commandersuite/core';
+import {
+  AnalysisRepository, SessionRepository, CoachingService, UsageLimits,
+  RiderProfileService, BLEService, calculateForces, calculateForcesWithIMU,
+} from '@commandersuite/core';
 import { extractFrames } from './frameExtraction';
 import { runPoseDetectionOnFrame } from './moveNet';
 import { analyseFrame } from './angleCalculations';
@@ -24,7 +27,6 @@ export async function analyseSessionVideo({
   sessionId,
   board,
   notes,
-  riderProfile,
   onProgress,
   onFrame,
   onStatus,
@@ -42,6 +44,13 @@ export async function analyseSessionVideo({
 
   const frames = await extractFrames(videoUri, { startMs: startMs || 0 });
   console.log('[Pipeline] frames extracted:', frames.length);
+
+  // Height/weight for both the joint-angle scale factor (analyseFrame) and
+  // ForceCalculator's biomechanics — see RiderProfileService for the
+  // fallback priority (user_profile -> latest weight_log -> 75kg/175cm
+  // defaults). *IsDefault flags let the frame review warn when a default
+  // was used rather than the rider's real numbers.
+  const riderProfile = await RiderProfileService.resolve();
 
   onStatus?.('Starting analysis…');
 
@@ -74,12 +83,8 @@ export async function analyseSessionVideo({
     }
 
     const timeS = Math.round(frame.timeMs / 1000);
-    // Raw hip x position for ForceCalculator's front/back weight-split
-    // estimate — not part of the angle measurements, and not persisted to
-    // frame_data (no column for it), so it's threaded straight through the
-    // onFrame callback instead of round-tripping through the DB.
-    let hipX = null;
     let measurements = null;
+    let forces = null;
     const trackingAction = result?.trackingAction ?? null;
     const avgTorsoConfidence = result?.avgTorsoConfidence ?? null;
 
@@ -87,14 +92,35 @@ export async function analyseSessionVideo({
       frameResults.push({ time_s: timeS, detected: false, trackingAction, avgTorsoConfidence });
     } else {
       measurements = analyseFrame(keypoints, riderProfile);
-      frameResults.push({ time_s: timeS, detected: true, trackingAction, avgTorsoConfidence, ...measurements });
-      if (!firstDetectedFrame && annotatedFrame) firstDetectedFrame = annotatedFrame;
 
-      const lHip = keypoints[11];
-      const rHip = keypoints[12];
-      if (lHip && rHip && (lHip[2] === undefined || lHip[2] >= 0.3) && (rHip[2] === undefined || rHip[2] >= 0.3)) {
-        hipX = (lHip[0] + rHip[0]) / 2;
-      }
+      // ForceCalculator needs GPS speed at this instant — correlated here
+      // (rather than reusing insertFrames' own correlation further down)
+      // so the live frame-review preview (onFrame below) shows the same
+      // numbers that end up persisted, without waiting on the DB write.
+      const utcTimestamp = videoUtcPlusSeconds(videoStartUtc, timeS);
+      const gpsPoint = utcTimestamp
+        ? await AnalysisRepository.correlateFrameToGPS(sessionId, utcTimestamp)
+        : null;
+      const conditions = { speed_kn: gpsPoint?.speed_kn ?? 0, boom_height_cm: 130 };
+
+      const imuReading = BLEService.isConnected() ? BLEService.getLatestReading() : null;
+      forces = imuReading
+        ? calculateForcesWithIMU(keypoints, riderProfile, conditions, imuReading)
+        : calculateForces(keypoints, riderProfile, conditions);
+
+      frameResults.push({
+        time_s: timeS, detected: true, trackingAction, avgTorsoConfidence,
+        ...measurements,
+        front_foot_pct: forces.frontFootPct,
+        back_foot_pct: forces.backFootPct,
+        fin_load_kg: forces.finLoadKg,
+        leg_length_cm: forces.legLengthCm,
+        arm_span_cm: forces.armSpanCm,
+        imu_connected: forces.imuConnected,
+        total_g_force: forces.totalGForce,
+        stability_pct: forces.stabilityPct,
+      });
+      if (!firstDetectedFrame && annotatedFrame) firstDetectedFrame = annotatedFrame;
     }
 
     onProgress?.(i + 1, frames.length);
@@ -102,7 +128,7 @@ export async function analyseSessionVideo({
       leftKneeAngle: measurements.left_knee_angle ?? null,
       rightKneeAngle: measurements.right_knee_angle ?? null,
       backAngle: measurements.back_angle_from_vertical ?? null,
-      hipX,
+      forces,
     } : null);
   }
 
@@ -128,6 +154,14 @@ export async function analyseSessionVideo({
     back_angle: r.back_angle_from_vertical ?? null,
     left_elbow_angle: r.left_elbow_angle ?? null,
     right_elbow_angle: r.right_elbow_angle ?? null,
+    front_foot_pct: r.front_foot_pct ?? null,
+    back_foot_pct: r.back_foot_pct ?? null,
+    fin_load_kg: r.fin_load_kg ?? null,
+    leg_length_cm: r.leg_length_cm ?? null,
+    arm_span_cm: r.arm_span_cm ?? null,
+    imu_connected: r.imu_connected ? 1 : 0,
+    total_g_force: r.total_g_force ?? null,
+    stability_pct: r.stability_pct ?? null,
   }));
 
   const analysisData = {
@@ -200,6 +234,8 @@ export async function analyseSessionVideo({
     sessionId,
     framesTotal: frameResults.length,
     framesDetected: detectedCount,
+    weightIsDefault: riderProfile.weightIsDefault,
+    heightIsDefault: riderProfile.heightIsDefault,
     notes: notes || null,
     board: board || null,
     coachingReport,
