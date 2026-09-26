@@ -248,9 +248,7 @@ export default function HomeScreen({ navigation }) {
         </TouchableOpacity>
         <TouchableOpacity activeOpacity={0.7}
           style={styles.quickBtn}
-          onPress={() => lastSession
-            ? navigation.navigate('PeakMoment', { sessionId: lastSession.session_id })
-            : navigation.navigate('Sessions')}
+          onPress={() => navigation.navigate('Sessions')}
         >
           <Text style={styles.quickBtnIcon}>🏆</Text>
           <Text style={styles.quickBtnText}>Peak Moment</Text>

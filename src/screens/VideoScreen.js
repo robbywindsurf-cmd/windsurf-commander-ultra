@@ -8,7 +8,7 @@ import { WebView } from 'react-native-webview';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as DocumentPicker from 'expo-document-picker';
-import { SessionRepository, FeatureGate } from '@commandersuite/core';
+import { SessionRepository } from '@commandersuite/core';
 import Header from '../components/Header';
 import SharedCard from '../components/SharedCard';
 import { analyseSessionVideo } from '../utils/poseAnalysisPipeline';
@@ -450,10 +450,6 @@ export default function VideoScreen({ navigation }) {
 
       <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" bounces={true} contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.container} style={styles.scrollBg}>
         <Header title="🎬 Video Library" />
-
-        <FeatureGate feature="FULL_ANALYSIS" onUpgradePress={() => navigation.navigate('Upgrade', { featureId: 'FULL_ANALYSIS' })}>
-          {null}
-        </FeatureGate>
 
         <TouchableOpacity activeOpacity={0.7} style={styles.importBtn} onPress={pickVideoFromPhone}>
           <Text style={styles.importBtnText}>📁 Import Video from Files</Text>
