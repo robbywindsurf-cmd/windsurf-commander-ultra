@@ -7,11 +7,13 @@
 import {
   AnalysisRepository, SessionRepository, CoachingService, UsageLimits,
   RiderProfileService, BLEService, calculateForces, calculateForcesWithIMU,
+  UserStore, EquipmentRepository, WeatherRepository, canAccess,
 } from '@commandersuite/core';
 import { extractFrames } from './frameExtraction';
 import { runPoseDetectionOnFrame } from './moveNet';
 import { analyseFrame } from './angleCalculations';
 import { videoUtcPlusSeconds } from './videoUtc';
+import { BiometricsUploadService } from '../services/BiometricsUploadService';
 
 function avg(frameResults, key) {
   const vals = frameResults
@@ -119,6 +121,12 @@ export async function analyseSessionVideo({
         imu_connected: forces.imuConnected,
         total_g_force: forces.totalGForce,
         stability_pct: forces.stabilityPct,
+        // Not persisted to frame_data (no columns for these) — kept only
+        // in-memory to pick the peak-speed frame for BiometricsUploadService
+        // below.
+        speed_kn: conditions.speed_kn,
+        back_lever_factor: forces.backLeverFactor,
+        arm_leverage_ratio: forces.armLeverageRatio,
       });
       if (!firstDetectedFrame && annotatedFrame) firstDetectedFrame = annotatedFrame;
     }
@@ -227,6 +235,76 @@ export async function analyseSessionVideo({
     } else {
       onStatus?.('Monthly coaching limit reached — angles saved, no report this time.');
     }
+  }
+
+  // Anonymised biometric data point for Oracle's peer-comparison pool
+  // (category_summaries) — Premium/Ultimate only, and only once the rider
+  // has set up a profile (no biometric_category without one). Fire-and-
+  // forget: not awaited, so a slow/failed network call never delays the
+  // screen transition this function's return triggers. Every lookup
+  // inside is independently guarded so a missing gear combo or weather
+  // row just means fewer optional fields on the payload, not a thrown
+  // error — see BiometricsUploadService's own .catch(() => {}).
+  //
+  // app_version is omitted — expo-constants isn't installed in this app,
+  // and adding a new dependency wasn't part of this task.
+  if (canAccess('FULL_ANALYSIS', userTier)) {
+    (async () => {
+      try {
+        const profile = await UserStore.getBiometrics();
+        if (!profile?.biometric_category) return;
+
+        const peakFrame = frameResults.reduce(
+          (best, frame) => (frame.detected && frame.speed_kn > (best?.speed_kn ?? 0) ? frame : best),
+          null
+        );
+        if (!peakFrame) return;
+
+        const session = await SessionRepository.getById(sessionId).catch(() => null);
+        const weather = session?.date ? await WeatherRepository.getForDate(session.date).catch(() => null) : null;
+
+        let boardVolumeL = null;
+        let finSizeCm = null;
+        let sailSizeM2 = null;
+        if (session?.gear_combo_id) {
+          const combos = await EquipmentRepository.getGearCombos().catch(() => []);
+          const combo = combos.find((c) => c.id === session.gear_combo_id);
+          if (combo) {
+            boardVolumeL = combo.board_volume_l ?? null;
+            const parsedFin = parseFloat(combo.fin_size);
+            const parsedSail = parseFloat(combo.sail_size);
+            finSizeCm = Number.isNaN(parsedFin) ? null : parsedFin;
+            sailSizeM2 = Number.isNaN(parsedSail) ? null : parsedSail;
+          }
+        }
+
+        const bandParts = profile.biometric_category.split('_');
+        BiometricsUploadService.uploadBiometrics({
+          category_key: profile.biometric_category,
+          height_band: bandParts.slice(0, 2).join('_'),
+          weight_band: bandParts.slice(2, 4).join('_'),
+          leg_band: bandParts.slice(4, 6).join('_'),
+          arm_band: bandParts.slice(6, 8).join('_'),
+          peak_speed_kn: peakFrame.speed_kn,
+          // left = front, right = back — see ForceCalculator.js's convention.
+          front_knee_angle: peakFrame.left_knee_angle ?? null,
+          back_knee_angle: peakFrame.right_knee_angle ?? null,
+          front_foot_pct: peakFrame.front_foot_pct ?? null,
+          back_foot_pct: peakFrame.back_foot_pct ?? null,
+          fin_load_kg: peakFrame.fin_load_kg ?? null,
+          back_lever_factor: peakFrame.back_lever_factor ?? null,
+          arm_leverage_ratio: peakFrame.arm_leverage_ratio ?? null,
+          wind_kn: weather?.best_wind_kn ?? null,
+          wave_m: weather?.wave_height_m ?? null,
+          board_volume_l: boardVolumeL,
+          fin_size_cm: finSizeCm,
+          sail_size_m2: sailSizeM2,
+          sport: 'windsurf',
+        }).catch(() => {}); // silent fail — never block UI
+      } catch (err) {
+        console.warn('[Pipeline] biometrics upload skipped:', err.message);
+      }
+    })();
   }
 
   return {
