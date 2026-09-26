@@ -13,7 +13,7 @@
       "usesAppleSignIn": true,
       "bundleIdentifier": "com.commandersuite.windsurf",
       "appleTeamId": "4JG2728CZU",
-      "buildNumber": "2",
+      "buildNumber": "3",
       "infoPlist": {
         "UIApplicationSceneManifest": {
           "UIApplicationSupportsMultipleScenes": false
