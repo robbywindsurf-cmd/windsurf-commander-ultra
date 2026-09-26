@@ -5,7 +5,7 @@
 // the anonymised category key (BiometricCategory.js) used for Oracle peer
 // comparison — never the exact measurements themselves.
 import React, { useState, useEffect } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet, TextInput } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet, TextInput, KeyboardAvoidingView, Platform } from 'react-native';
 import Header from '../components/Header';
 import SharedCard from '../components/SharedCard';
 import { UserStore, getCategoryKey } from '@commandersuite/core';
@@ -89,6 +89,11 @@ export default function RiderProfileScreen({ navigation }) {
   }
 
   return (
+    <KeyboardAvoidingView
+      style={styles.flex}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
+    >
     <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.container} style={styles.scrollBg} keyboardShouldPersistTaps="handled">
       <Header title="🏄 Rider Profile" />
       <TouchableOpacity activeOpacity={0.7} style={styles.closeBtn} onPress={() => navigation.goBack()}>
@@ -224,12 +229,14 @@ export default function RiderProfileScreen({ navigation }) {
         <Text style={styles.saveBtnText}>{saving ? 'Saving…' : 'Save Profile'}</Text>
       </TouchableOpacity>
     </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
+  flex: { flex: 1, backgroundColor: colors.deep },
   scrollBg: { backgroundColor: colors.deep },
-  container: { padding: 16, paddingBottom: 40 },
+  container: { padding: 16, paddingBottom: 80 },
   closeBtn: { paddingVertical: 4, marginBottom: 8 },
   closeBtnText: { color: SKY, fontSize: 14, fontWeight: '600' },
 
