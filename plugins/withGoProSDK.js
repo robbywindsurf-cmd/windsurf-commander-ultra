@@ -54,10 +54,24 @@ class GoProMediaModule: NSObject {
         let outputDir = outputURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
 
+        // exportEquirectangular() has no throws/completion/error signal at
+        // all — a silent failure inside the SDK looks identical to a
+        // silent success from Swift's point of view. This logging exists
+        // so a failure at least tells us *something*: whether the input
+        // was even readable, how long the SDK call actually ran for (near-
+        // instant strongly suggests it rejected the input early rather
+        // than genuinely transcoding), and the output file's exact state
+        // right after — see "Output file is empty or missing" in
+        // VideoScreen.js, which is as much detail as the JS side ever gets.
+        let inputAttrs = try? FileManager.default.attributesOfItem(atPath: inputURL.path)
+        let inputSize = (inputAttrs?[.size] as? NSNumber)?.int64Value ?? -1
+        NSLog("[GoProERP] input=%@ exists=%@ size=%lld", inputURL.path, FileManager.default.fileExists(atPath: inputURL.path) ? "Y" : "N", inputSize)
+
         let clampedHeight = max(500, min(2688, UInt16(heightPx)))
         let resolution = GoProResolution(width: UInt16(widthPx), height: clampedHeight)
         let codec: GPCodec = useHEVC ? .HEVC : .H264
         let stabilization: GPStabilization = stabilize ? .allOn : .allOff
+        NSLog("[GoProERP] options width=%d height=%d(clamped=%d) codec=%@ stabilize=%@", widthPx, heightPx, Int(clampedHeight), useHEVC ? "HEVC" : "H264", stabilize ? "Y" : "N")
 
         let options = GoProExportOptions(
           inputUrl: inputURL,
@@ -68,7 +82,21 @@ class GoProMediaModule: NSObject {
           bitrate: 0
         )
 
-        exportEquirectangular(options, cancellation: { shouldCancel }, progress: { _ in })
+        let startTime = Date()
+        var lastLoggedDecile = -1
+        exportEquirectangular(options, cancellation: { shouldCancel }, progress: { progress in
+          let decile = Int(progress * 10)
+          if decile != lastLoggedDecile {
+            lastLoggedDecile = decile
+            NSLog("[GoProERP] progress=%.0f%% elapsed=%.1fs", progress * 100, Date().timeIntervalSince(startTime))
+          }
+        })
+        let elapsed = Date().timeIntervalSince(startTime)
+
+        let outputExists = FileManager.default.fileExists(atPath: outputURL.path)
+        let outputAttrs = try? FileManager.default.attributesOfItem(atPath: outputURL.path)
+        let outputSize = (outputAttrs?[.size] as? NSNumber)?.int64Value ?? -1
+        NSLog("[GoProERP] done elapsed=%.1fs shouldCancel=%@ outputExists=%@ outputSize=%lld", elapsed, shouldCancel ? "Y" : "N", outputExists ? "Y" : "N", outputSize)
 
         if shouldCancel {
           try? FileManager.default.removeItem(at: outputURL)
@@ -77,6 +105,7 @@ class GoProMediaModule: NSObject {
           resolve(outputURL.path)
         }
       } catch {
+        NSLog("[GoProERP] threw: %@", error.localizedDescription)
         reject("GOPRO_ERP_ERROR", "ERP export failed: \\(error.localizedDescription)", error)
       }
     }
