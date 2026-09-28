@@ -176,7 +176,10 @@ export const MOVENET_HTML = `<!DOCTYPE html>
     }
 
     // ── Equirectangular → perspective ─────────────────────────────────────
-    function equirectangularToPerspective(srcCanvas, theta, phi) {
+    // fovParam is optional — omit for the default FOV=100° wide pass; pass a
+    // smaller value for the tight-crop second pass in processFrame.
+    function equirectangularToPerspective(srcCanvas, theta, phi, fovParam) {
+      var useFov  = (fovParam !== undefined && fovParam !== null) ? fovParam : FOV;
       var srcW = srcCanvas.width, srcH = srcCanvas.height;
       var srcCtx  = srcCanvas.getContext('2d');
       var srcData = srcCtx.getImageData(0, 0, srcW, srcH);
@@ -189,9 +192,9 @@ export const MOVENET_HTML = `<!DOCTYPE html>
       var outData = outCtx.createImageData(OUT_WIDTH, OUT_HEIGHT);
       var out     = outData.data;
 
-      var fovRad   = FOV   * Math.PI / 180;
-      var thetaRad = theta * Math.PI / 180;
-      var phiRad   = phi   * Math.PI / 180;
+      var fovRad   = useFov  * Math.PI / 180;
+      var thetaRad = theta   * Math.PI / 180;
+      var phiRad   = phi     * Math.PI / 180;
       var halfW    = Math.tan(fovRad / 2);
       var halfH    = halfW * OUT_HEIGHT / OUT_WIDTH;
       var cosT = Math.cos(thetaRad), sinT = Math.sin(thetaRad);
@@ -286,19 +289,75 @@ export const MOVENET_HTML = `<!DOCTYPE html>
         var centroid   = getRiderCentroid(keypoints, 0.25);
         var nextAngles = updateTrackingAngles(centroid, keypoints, currentTheta, currentPhi, anchorTheta, anchorPhi);
 
-        var infCtx = inferenceCanvas.getContext('2d');
-        drawSkeleton(infCtx, keypoints, 0.25);
-        var annotatedFrame = inferenceCanvas.toDataURL('image/jpeg', 0.6).split(',')[1];
+        // ── Tight-crop second pass ─────────────────────────────────────────
+        // Mirrors rider_extract_360.py: after a successful wide-FOV detection,
+        // compute the rider's angular bounding-box height and re-project at a
+        // tighter FOV so MoveNet sees a larger, detail-rich view of the rider.
+        // Tracking angles (nextTheta/nextPhi) always come from the first pass;
+        // keypoints and annotatedFrame come from whichever pass was better.
+        //
+        // Only active for equirectangular footage (useReproject + wide aspect
+        // ratio) where the rider typically appears small at FOV=100°, and only
+        // when tracking has converged ('updated') so the centroid is reliable.
+        //
+        // Python constants reproduced here:
+        //   PAD_TOP = 1.2  (sail height above rider body)
+        //   PAD_BOTTOM = 0.8  (board below)
+        //   +0.5  (baseline buffer)
+        //   => expand_fov = box_h_deg * 3.5, clamped 40–140°
+        var finalKeypoints  = keypoints;
+        var finalCanvas     = inferenceCanvas;
+        var cropFov         = FOV;
+
+        var isEquirect = useReproject && canvas.width > canvas.height * 1.5;
+        if (isEquirect && nextAngles.trackingAction === 'updated') {
+          var visKps = keypoints.filter(function(kp) { return kp && kp[2] >= 0.25; });
+          if (visKps.length >= 4) {
+            var kpYs   = visKps.map(function(kp) { return kp[1]; });
+            var boxH_px  = Math.max.apply(null, kpYs) - Math.min.apply(null, kpYs);
+            var boxH_deg = boxH_px * (FOV / OUT_HEIGHT);
+            var expandFov = Math.max(40, Math.min(140, boxH_deg * 3.5));
+
+            // Only pay the cost of a second re-projection when the tight crop
+            // is meaningfully narrower (rider small enough to benefit).
+            if (expandFov < FOV * 0.85) {
+              // Re-project at tight FOV centred on current tracking direction.
+              // (perspCanvas is safely reused — first-pass inference is done.)
+              var tightCanvas = equirectangularToPerspective(
+                canvas, currentTheta, currentPhi, expandFov
+              );
+              var poses2 = await detector.estimatePoses(tightCanvas, { flipHorizontal: false });
+              if (poses2 && poses2.length > 0) {
+                var kp2 = poses2[0].keypoints.map(function(k2) {
+                  return [k2.x, k2.y, k2.score || 0];
+                });
+                // Adopt tight-crop keypoints only if quality is maintained
+                // (at least as many visible joints as the wide pass).
+                var vis2 = kp2.filter(function(k2) { return k2[2] >= 0.25; });
+                if (vis2.length >= visKps.length) {
+                  finalKeypoints = kp2;
+                  finalCanvas    = tightCanvas;
+                  cropFov        = expandFov;
+                }
+              }
+            }
+          }
+        }
+
+        var infCtx = finalCanvas.getContext('2d');
+        drawSkeleton(infCtx, finalKeypoints, 0.25);
+        var annotatedFrame = finalCanvas.toDataURL('image/jpeg', 0.6).split(',')[1];
 
         window.ReactNativeWebView.postMessage(JSON.stringify({
-          type:           'result',
-          frameId:        frameId,
-          keypoints:      keypoints,
-          annotatedFrame: annotatedFrame,
-          nextTheta:      nextAngles.nextTheta,
-          nextPhi:        nextAngles.nextPhi,
-          trackingAction: nextAngles.trackingAction,
+          type:               'result',
+          frameId:            frameId,
+          keypoints:          finalKeypoints,
+          annotatedFrame:     annotatedFrame,
+          nextTheta:          nextAngles.nextTheta,
+          nextPhi:            nextAngles.nextPhi,
+          trackingAction:     nextAngles.trackingAction,
           avgTorsoConfidence: nextAngles.avgTorsoConfidence,
+          cropFov:            cropFov,
         }));
 
       } catch (err) {
