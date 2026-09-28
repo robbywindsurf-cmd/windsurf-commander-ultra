@@ -81,7 +81,7 @@ Verify JS syntax before every deploy:
 node -e "require('./node_modules/@babel/parser').parse(require('fs').readFileSync('<file>','utf8'),{sourceType:'module',plugins:['jsx']}); console.log('OK')"
 ```
 
-Metro logs are captured to `/tmp/metro-hnsw.log` (`npx expo start --dev-client 2>&1 | tee /tmp/metro-hnsw.log`) — `grep`/`tail` it instead of guessing at runtime behavior. **Log timestamps are UTC** (`toISOString()`), not local BST — convert before comparing against wall-clock time or you'll misjudge how long something's been running.
+Metro logs are captured to `/tmp/metro-hnsw.log` (`npx expo start --dev-client 2>&1 | tee /tmp/metro-hnsw.log`) — `grep`/`tail` it instead of guessing at runtime behavior. **Log timestamps are UTC** (`toISOString()`), not local BST — convert before comparing against wall-clock time or you'll misjudge how long something's been running. **Native `NSLog`/`os_log` output never reaches Metro** — it only goes to the device console, via `xcrun devicectl device process launch --console --device 00008130-00164CE80AFA001C <bundle-id>`. Grepping the Metro log for a native diagnostic will always come back empty; this wasted real time on the GoPro 360° conversion bug (see handover Section 17).
 
 To inspect files on the device without a full USB copy (Mac disk is often tight), use:
 ```bash

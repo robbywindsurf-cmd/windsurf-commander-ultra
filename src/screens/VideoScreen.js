@@ -28,6 +28,15 @@ const DANGER = colors.danger;
 const IMPORTED_VIDEOS_KEY = 'windsurf_imported_videos';
 const VIDEOS_DIR = FileSystem.documentDirectory + 'imported_videos/';
 
+// GoPro ERP export resolution. Must stay exactly 2:1 — equirectangular
+// geometry, and movenetWebView.js only reprojects a frame wider than 1.5:1.
+// MoveNet runs on a fixed 960x720 canvas at 100 deg FOV, which uses only
+// 100/360 of the source width, so ~2560px is the floor below which the
+// inference crop starts being upscaled (blurred keypoints). 2880x1440 is
+// ~0.56x the pixel work of 3840x1920 and stays above that floor.
+const ERP_WIDTH  = 2880;
+const ERP_HEIGHT = 1440;
+
 function isVideo360(fname) {
   return (fname || '').toLowerCase().endsWith('.360');
 }
@@ -241,7 +250,7 @@ export default function VideoScreen({ navigation }) {
       if (is360) {
         const { GoProMediaModule } = NativeModules;
         if (GoProMediaModule) {
-          setImportingFile({ fname, progress: 0.2, status: '🔄 Converting 360° to flat MP4…\nThis may take several minutes' });
+          setImportingFile({ fname, progress: 0.2, status: '🔄 Converting 360° to flat MP4…\nKeep this screen open — this may take several minutes' });
           await new Promise(r => setTimeout(r, 80));
 
           const baseName = fname.replace(/\.360$/i, '');
@@ -249,8 +258,9 @@ export default function VideoScreen({ navigation }) {
           const inputPath  = uri.replace('file://', '');
 
           try {
+            const startedAt = Date.now();
             const mp4Path = await GoProMediaModule.exportERP(
-              inputPath, outputPath, 3840, 1920, true, true
+              inputPath, outputPath, ERP_WIDTH, ERP_HEIGHT, true, true
             );
             const info = await FileSystem.getInfoAsync('file://' + mp4Path);
 
@@ -258,7 +268,17 @@ export default function VideoScreen({ navigation }) {
               uri   = 'file://' + mp4Path;
               fname = baseName + '_erp.mp4';
             } else {
-              throw new Error('Output file is empty or missing');
+              // exportEquirectangular() has no error channel, so an aborted
+              // stitch surfaces here as a missing file. The usual cause is
+              // the SDK's gpSphericalStitcherExporter error 500 ("Didn't get
+              // enough background time to finish") after iOS suspends the
+              // app mid-conversion — which also deletes the partial output.
+              // A missing file therefore does NOT imply a bad input file.
+              const seconds = Math.round((Date.now() - startedAt) / 1000);
+              throw new Error(
+                `conversion produced no file after ${seconds}s — it was interrupted. ` +
+                'Keep the app open and the screen unlocked while it runs, then retry.'
+              );
             }
           } catch (erpErr) {
             console.warn('[ERP] conversion failed:', erpErr.message);

@@ -9,6 +9,7 @@ const path = require('path');
 const fs = require('fs');
 
 const SWIFT_MODULE = `import Foundation
+import UIKit
 import GoProMediaSDK
 
 @objc(GoProMediaModule)
@@ -48,6 +49,22 @@ class GoProMediaModule: NSObject {
   ) {
     var shouldCancel = false
     DispatchQueue.global(qos: .userInitiated).async {
+      // A 360° stitch takes minutes. iOS suspends a backgrounded app after
+      // roughly 180s, at which point the SDK aborts with
+      // gpSphericalStitcherExporter error 500 ("Didn't get enough background
+      // time to finish") and deletes its own partial output — which reaches
+      // JS as nothing more than a missing file. Screen auto-lock is what
+      // backgrounds the app mid-stitch, so hold the idle timer throughout.
+      let previousIdleTimerDisabled = DispatchQueue.main.sync { () -> Bool in
+        let previous = UIApplication.shared.isIdleTimerDisabled
+        UIApplication.shared.isIdleTimerDisabled = true
+        return previous
+      }
+      defer {
+        DispatchQueue.main.sync {
+          UIApplication.shared.isIdleTimerDisabled = previousIdleTimerDisabled
+        }
+      }
       do {
         let inputURL = URL(fileURLWithPath: inputPath)
         let outputURL = URL(fileURLWithPath: outputPath)
