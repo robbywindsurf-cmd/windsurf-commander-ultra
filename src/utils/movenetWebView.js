@@ -1,7 +1,9 @@
 // movenetWebView.js
 // MoveNet inference WebView with:
 // 1. Equirectangular → perspective re-projection
-// 2. Auto-tracking constrained to ±30° horizontal, ±20° vertical of initial tap
+// 2. Auto-tracking toward the rider, with a continuity gate (apparent size and
+//    position must stay plausible for the same rider) and a ±20° horizontal /
+//    ±15° vertical safety window around the initial tap
 // 3. Colour-coded skeleton overlay with bounding box
 
 export const MOVENET_HTML = `<!DOCTYPE html>
@@ -31,6 +33,31 @@ export const MOVENET_HTML = `<!DOCTYPE html>
     var MAX_DELTA_PER_FRAME     = 5; // degrees
     var MAX_MISSES_BEFORE_RESET = 5;
     var consecutiveMisses = 0;
+
+    // Continuity gate. The Python original (rider_extract_360.py) used YOLOv8n-
+    // pose and picked the highest-confidence *person*, so it could reject a
+    // detection outright when nobody scored above 0.4. MoveNet SINGLEPOSE always
+    // returns keypoints and scores them per-joint, not per-person, so there is
+    // nothing to say "this is not the rider" — which is how tracking drifts onto
+    // distant objects.
+    //
+    // The rider's apparent size is the discriminator that replaces it: a distant
+    // object projects a far smaller torso span than the rider you started on.
+    // Measured as the pixel height of confidently-detected keypoints, compared
+    // against a slow-moving reference of the accepted detections so far.
+    var MIN_RIDER_SIZE_RATIO   = 0.6;
+    var MAX_RIDER_SIZE_RATIO   = 1.6;
+    // A successive detection more than half a frame width away is a different
+    // subject, not the rider. Fraction of OUT_WIDTH rather than a fixed pixel
+    // count so it tracks any future change to the output size.
+    var MAX_CENTROID_JUMP_FRAC = 0.5;
+    var riderSizeRef   = null;
+    var lastAcceptedCx = null;
+    var lastAcceptedCy = null;
+    // Consecutive resets with no accepted detection in between. Used as an
+    // escape hatch below — see noteReset().
+    var MAX_RESET_STREAK = 3;
+    var resetStreak = 0;
 
     // ── Skeleton ──────────────────────────────────────────────────────────
     var SEGMENTS = [
@@ -120,6 +147,48 @@ export const MOVENET_HTML = `<!DOCTYPE html>
       return { avgConf: avgConf, detectedCount: detectedCount };
     }
 
+    // ── Rider apparent size ───────────────────────────────────────────────
+    // Pixel height of the confidently-detected keypoints. Torso-joint span
+    // rather than a full body box: MoveNet often misses ankles/wrists on a
+    // distant or partly-occluded rider, and a box that collapses when a foot
+    // drops out would look like a size change when nothing moved.
+    function getRiderSize(keypoints) {
+      var vis = keypoints.filter(function(kp) { return kp && kp[2] >= MIN_TRACKING_CONFIDENCE; });
+      if (vis.length < 2) return null;
+      var ys = vis.map(function(kp) { return kp[1]; });
+      var h = Math.max.apply(null, ys) - Math.min.apply(null, ys);
+      return h > 0 ? { h: h } : null;
+    }
+
+    function noteReset() {
+      // Position memory is per-subject: after losing the rider, the next
+      // accepted detection can legitimately be anywhere in the frame.
+      lastAcceptedCx = null;
+      lastAcceptedCy = null;
+      // The size reference deliberately SURVIVES a reset. Clearing it here is a
+      // trap worth naming: the next detection would then have nothing to be
+      // measured against, so it would be accepted unconditionally and set the
+      // reference to its own size — meaning a tracker that reset away from a
+      // distant object would re-adopt that same object one frame later. Keeping
+      // the reference is what makes the wrong subject stay rejected.
+      resetStreak++;
+      if (resetStreak >= MAX_RESET_STREAK) {
+        // Escape hatch. Repeated resets with no accepted detection in between
+        // means the reference is probably wrong rather than the detections — the
+        // rider really is at a different apparent distance — so start fresh
+        // instead of rejecting forever.
+        //
+        // The trade-off, stated plainly: once this clears the reference, the
+        // next detection is adopted unconditionally, so a subject that has been
+        // rejected for the whole streak can become the new reference. Reaching
+        // here needs MAX_RESET_STREAK full reset cycles first (5 misses each, so
+        // ~20 unproductive frames), and the alternative is recording nothing at
+        // all for the rest of the clip. It is the lesser evil, not a guarantee.
+        riderSizeRef = null;
+        resetStreak = 0;
+      }
+    }
+
     // ── Update tracking angles ────────────────────────────────────────────
     function updateTrackingAngles(centroid, keypoints, currentTheta, currentPhi, anchorTheta, anchorPhi) {
       var torso = getTorsoConfidence(keypoints);
@@ -131,17 +200,56 @@ export const MOVENET_HTML = `<!DOCTYPE html>
         consecutiveMisses++;
         if (consecutiveMisses >= MAX_MISSES_BEFORE_RESET) {
           consecutiveMisses = 0;
+          noteReset();
           return {
             nextTheta: anchorTheta, nextPhi: anchorPhi,
-            trackingAction: 'reset', avgTorsoConfidence: torso.avgConf
+            trackingAction: 'reset', avgTorsoConfidence: torso.avgConf,
+            // accepted stays true here: a low-confidence frame is unchanged
+            // behaviour, and the caller has always reported its keypoints. Only
+            // the continuity gate below asserts positively that the detection is
+            // a different subject, and only that suppresses keypoints.
+            accepted: true
           };
         }
         return {
           nextTheta: currentTheta, nextPhi: currentPhi,
-          trackingAction: 'held', avgTorsoConfidence: torso.avgConf
+          trackingAction: 'held', avgTorsoConfidence: torso.avgConf,
+          accepted: true
         };
       }
-      consecutiveMisses = 0;
+
+      // ── Continuity gate ─────────────────────────────────────────────────
+      var size = getRiderSize(keypoints);
+      var rejected = null;
+      if (size && riderSizeRef !== null &&
+          (size.h < riderSizeRef * MIN_RIDER_SIZE_RATIO || size.h > riderSizeRef * MAX_RIDER_SIZE_RATIO)) {
+        rejected = 'rejected_size';
+      }
+      if (!rejected && lastAcceptedCx !== null) {
+        var jumpX = centroid.cx - lastAcceptedCx;
+        var jumpY = centroid.cy - lastAcceptedCy;
+        if (Math.sqrt(jumpX * jumpX + jumpY * jumpY) > OUT_WIDTH * MAX_CENTROID_JUMP_FRAC) {
+          rejected = 'rejected_position';
+        }
+      }
+
+      if (rejected) {
+        consecutiveMisses++;
+        if (consecutiveMisses >= MAX_MISSES_BEFORE_RESET) {
+          consecutiveMisses = 0;
+          noteReset();
+          return {
+            nextTheta: anchorTheta, nextPhi: anchorPhi,
+            trackingAction: 'reset', avgTorsoConfidence: torso.avgConf,
+            accepted: false
+          };
+        }
+        return {
+          nextTheta: currentTheta, nextPhi: currentPhi,
+          trackingAction: rejected, avgTorsoConfidence: torso.avgConf,
+          accepted: false
+        };
+      }
 
       var offsetX  = centroid.cx - OUT_WIDTH  / 2;
       var offsetY  = centroid.cy - OUT_HEIGHT / 2;
@@ -150,15 +258,33 @@ export const MOVENET_HTML = `<!DOCTYPE html>
       var newTheta = currentTheta + offsetX * degPerPx * (1 - TRACKING_SMOOTH);
       var newPhi   = currentPhi   - offsetY * degPerPx * (1 - TRACKING_SMOOTH);
 
-      // Reject sudden jumps — hold current position instead
+      // Reject sudden jumps — hold current position instead. Counted as a miss
+      // (it did not before): a detection that has to be rejected as implausible
+      // is not trustworthy, so it should be able to drive the anchor reset.
+      // Without that the counter only ever saw *absent* detections, and a
+      // tracker locked onto a confidently-wrong subject could hold there
+      // indefinitely without ever reaching MAX_MISSES_BEFORE_RESET.
       var deltaTheta = newTheta - currentTheta;
       var deltaPhi   = newPhi   - currentPhi;
       if (Math.abs(deltaTheta) > MAX_DELTA_PER_FRAME || Math.abs(deltaPhi) > MAX_DELTA_PER_FRAME) {
+        consecutiveMisses++;
         return {
           nextTheta: currentTheta, nextPhi: currentPhi,
-          trackingAction: 'rejected_jump', avgTorsoConfidence: torso.avgConf
+          trackingAction: 'rejected_jump', avgTorsoConfidence: torso.avgConf,
+          accepted: true
         };
       }
+
+      consecutiveMisses = 0;
+      resetStreak = 0;
+      // Commit continuity state only for a detection that passed every gate,
+      // so a rejected one cannot drag the reference size or last-good position
+      // onto itself.
+      if (size) {
+        riderSizeRef = riderSizeRef === null ? size.h : riderSizeRef * 0.8 + size.h * 0.2;
+      }
+      lastAcceptedCx = centroid.cx;
+      lastAcceptedCy = centroid.cy;
 
       // Constrain to search window around initial tap
       if (anchorTheta !== null && anchorTheta !== undefined) {
@@ -168,10 +294,15 @@ export const MOVENET_HTML = `<!DOCTYPE html>
         newPhi = Math.max(anchorPhi - WINDOW_PHI, Math.min(anchorPhi + WINDOW_PHI, newPhi));
       }
 
-      newPhi = Math.max(-85, Math.min(85, newPhi));
+      // Upper bound is 0, not 85: the camera is boom-end mounted, so the rider
+      // is always at or below boom level. rider_extract_360.py clamped here too
+      // (max(-85, min(0, last_phi))); allowing +85 let tracking aim at the sky,
+      // where the only thing to detect is cloud or a distant building.
+      newPhi = Math.max(-85, Math.min(0, newPhi));
       return {
         nextTheta: newTheta, nextPhi: newPhi,
-        trackingAction: 'updated', avgTorsoConfidence: torso.avgConf
+        trackingAction: 'updated', avgTorsoConfidence: torso.avgConf,
+        accepted: true
       };
     }
 
@@ -344,9 +475,23 @@ export const MOVENET_HTML = `<!DOCTYPE html>
           }
         }
 
-        var infCtx = finalCanvas.getContext('2d');
-        drawSkeleton(infCtx, finalKeypoints, 0.25);
-        var annotatedFrame = finalCanvas.toDataURL('image/jpeg', 0.6).split(',')[1];
+        // A detection the continuity gate rejected is not the rider, so its
+        // keypoints must never reach the analysis. poseAnalysisPipeline records
+        // a null-keypoints frame as detected:false and skips biomechanics, which
+        // is the correct outcome — otherwise a distant object gets persisted as
+        // this rider's knee angles and foot pressures, which is worse than the
+        // drift itself.
+        if (!nextAngles.accepted) {
+          finalKeypoints = null;
+          finalCanvas    = null;
+        }
+
+        var annotatedFrame = null;
+        if (finalCanvas) {
+          var infCtx = finalCanvas.getContext('2d');
+          drawSkeleton(infCtx, finalKeypoints, 0.25);
+          annotatedFrame = finalCanvas.toDataURL('image/jpeg', 0.6).split(',')[1];
+        }
 
         window.ReactNativeWebView.postMessage(JSON.stringify({
           type:               'result',
