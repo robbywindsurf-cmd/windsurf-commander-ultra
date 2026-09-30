@@ -5,10 +5,10 @@ import SharedCard from '../components/SharedCard';
 import { WeatherBackfillService } from '../services/WeatherBackfillService';
 import { RameHeadWindService } from '../services/RameHeadWindService';
 import { HrBackfillService } from '../services/HrBackfillService';
-import { AnalysisRepository, EmbeddingService, TierService, canAccess, LocalAI, getDb, SummaryService, BLEService, TIERS, UserStore } from '@commandersuite/core';
+import { AnalysisRepository, EmbeddingService, TierService, canAccess, LocalAI, getDb, SummaryService, BLEService, TIERS, UserStore, UsageLimits } from '@commandersuite/core';
 import { colors } from '../theme';
 import { formatLocalTime } from '../utils/videoUtc';
-import { PRIVACY_POLICY_URL, TERMS_OF_SERVICE_URL } from '../config';
+import { PRIVACY_POLICY_URL, TERMS_OF_SERVICE_URL, DEV_TOOLS } from '../config';
 import { openExternalLink } from '../utils/openExternalLink';
 import { AuthService } from '../services/AuthService';
 import { IdentityService } from '../services/IdentityService';
@@ -472,8 +472,23 @@ export default function SettingsScreen({ navigation }) {
   // confirmed fixed. Dumps the 10 most recently fetched weather_cache rows
   // so it's immediately visible whether the cache is empty, has stale
   // dates, or has the wrong beach name.
-  async function checkWeatherCache() {
-    const db = await getDb();
+  // Dev-only — gated by config.js's DEV_TOOLS. The monthly caps otherwise block
+  // testing for the rest of the calendar month once they are used up.
+  async function resetUsageCaps() {
+    try {
+      await UsageLimits.resetAllUsage();
+      const tier = await TierService.getCachedTier();
+      const remaining = await UsageLimits.getRemaining('FULL_ANALYSIS', tier);
+      Alert.alert(
+        'Usage reset',
+        `Monthly caps cleared — ${remaining} full analyses available on ${tier}.`
+      );
+    } catch (err) {
+      Alert.alert('Reset failed', err.message || 'Unknown error');
+    }
+  }
+
+  async function checkWeatherCache() {    const db = await getDb();
     const rows = await db.getAllAsync(
       `SELECT beach_name, forecast_date, best_wind_kn, fetched_at
        FROM weather_cache
@@ -1068,6 +1083,12 @@ export default function SettingsScreen({ navigation }) {
       <TouchableOpacity activeOpacity={0.7} style={styles.viewImportBtn} onPress={checkWeatherCache}>
         <Text style={styles.viewImportBtnText}>🐛 Check Weather Cache (debug)</Text>
       </TouchableOpacity>
+
+      {DEV_TOOLS && (
+        <TouchableOpacity activeOpacity={0.7} style={styles.viewImportBtn} onPress={resetUsageCaps}>
+          <Text style={styles.viewImportBtnText}>🧪 Reset monthly usage caps (dev)</Text>
+        </TouchableOpacity>
+      )}
 
       <Text style={styles.sectionLabel}>📄 Legal</Text>
       <TouchableOpacity activeOpacity={0.7} style={styles.viewImportBtn} onPress={() => openExternalLink(PRIVACY_POLICY_URL, 'Privacy Policy')}>
