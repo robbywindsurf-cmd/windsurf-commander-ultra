@@ -2,6 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { ScrollView, Text, View, TouchableOpacity, StyleSheet, ActivityIndicator, Alert } from 'react-native';
 import { UserStore, TierService, RevenueCatService, getFeatureDefinition } from '@commandersuite/core';
 import { colors } from '../theme';
+import { PRIVACY_POLICY_URL, TERMS_OF_SERVICE_URL } from '../config';
+import { openExternalLink } from '../utils/openExternalLink';
 
 const PREMIUM_FEATURES = [
   '5 analyses per month',
@@ -91,10 +93,6 @@ export default function UpgradeScreen({ route, navigation }) {
     } finally {
       setRestoring(false);
     }
-  }
-
-  function showComingSoon(label) {
-    Alert.alert(label, 'Not available yet.');
   }
 
   let featureBanner = null;
@@ -208,10 +206,10 @@ export default function UpgradeScreen({ route, navigation }) {
         <TouchableOpacity activeOpacity={0.7} onPress={restore} disabled={restoring}>
           <Text style={styles.footerLink}>{restoring ? 'Restoring…' : 'Restore Purchase'}</Text>
         </TouchableOpacity>
-        <TouchableOpacity activeOpacity={0.7} onPress={() => showComingSoon('Terms of Service')}>
+        <TouchableOpacity activeOpacity={0.7} onPress={() => openExternalLink(TERMS_OF_SERVICE_URL, 'Terms of Service')}>
           <Text style={styles.footerLink}>Terms of Service</Text>
         </TouchableOpacity>
-        <TouchableOpacity activeOpacity={0.7} onPress={() => showComingSoon('Privacy Policy')}>
+        <TouchableOpacity activeOpacity={0.7} onPress={() => openExternalLink(PRIVACY_POLICY_URL, 'Privacy Policy')}>
           <Text style={styles.footerLink}>Privacy Policy</Text>
         </TouchableOpacity>
       </View>

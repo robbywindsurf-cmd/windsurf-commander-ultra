@@ -8,6 +8,8 @@ import { HrBackfillService } from '../services/HrBackfillService';
 import { AnalysisRepository, EmbeddingService, TierService, canAccess, LocalAI, getDb, SummaryService, BLEService, TIERS, UserStore } from '@commandersuite/core';
 import { colors } from '../theme';
 import { formatLocalTime } from '../utils/videoUtc';
+import { PRIVACY_POLICY_URL, TERMS_OF_SERVICE_URL } from '../config';
+import { openExternalLink } from '../utils/openExternalLink';
 import { AuthService } from '../services/AuthService';
 import { IdentityService } from '../services/IdentityService';
 import { SiteAuthService } from '../services/SiteAuthService';
@@ -1065,6 +1067,14 @@ export default function SettingsScreen({ navigation }) {
 
       <TouchableOpacity activeOpacity={0.7} style={styles.viewImportBtn} onPress={checkWeatherCache}>
         <Text style={styles.viewImportBtnText}>🐛 Check Weather Cache (debug)</Text>
+      </TouchableOpacity>
+
+      <Text style={styles.sectionLabel}>📄 Legal</Text>
+      <TouchableOpacity activeOpacity={0.7} style={styles.viewImportBtn} onPress={() => openExternalLink(PRIVACY_POLICY_URL, 'Privacy Policy')}>
+        <Text style={styles.viewImportBtnText}>Privacy Policy</Text>
+      </TouchableOpacity>
+      <TouchableOpacity activeOpacity={0.7} style={styles.viewImportBtn} onPress={() => openExternalLink(TERMS_OF_SERVICE_URL, 'Terms of Service')}>
+        <Text style={styles.viewImportBtnText}>Terms of Service</Text>
       </TouchableOpacity>
     </ScrollView>
   );
