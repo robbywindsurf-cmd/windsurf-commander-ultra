@@ -15,6 +15,7 @@
       "appleTeamId": "4JG2728CZU",
       "buildNumber": "5",
       "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false,
         "UIApplicationSceneManifest": {
           "UIApplicationSupportsMultipleScenes": false
         },
