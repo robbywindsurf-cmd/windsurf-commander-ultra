@@ -31,7 +31,11 @@ export function getMoveNetDiag() {
 }
 
 export function resetMoveNetDiag() {
-  diag.readyMs = null;
+  // readyMs deliberately survives: it describes when the current WebView's
+  // detector initialised, and an analysis usually starts long after that. The
+  // first run on build 8 reported readyMs=null alongside isReady=true, which
+  // reads like a failed init — it was only ever this reset clearing a value the
+  // 'ready' event had already supplied. It is re-armed on the next mount.
   diag.initErrors = 0;
   diag.framesSent = 0;
   diag.framesReplied = 0;
@@ -43,6 +47,9 @@ export function resetMoveNetDiag() {
 export function registerWebView(ref) {
   webviewRef = ref;
   mountedAt = Date.now();
+  // A new mount means a new detector, so the previous init timing no longer
+  // describes anything.
+  diag.readyMs = null;
 }
 
 export function handleWebViewMessage(event) {
