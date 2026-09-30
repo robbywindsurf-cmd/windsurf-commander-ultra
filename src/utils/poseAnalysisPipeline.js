@@ -10,10 +10,11 @@ import {
   UserStore, EquipmentRepository, WeatherRepository, canAccess,
 } from '@commandersuite/core';
 import { extractFrames } from './frameExtraction';
-import { runPoseDetectionOnFrame } from './moveNet';
+import { runPoseDetectionOnFrame, getMoveNetDiag, resetMoveNetDiag } from './moveNet';
 import { analyseFrame } from './angleCalculations';
 import { videoUtcPlusSeconds } from './videoUtc';
 import { BiometricsUploadService } from '../services/BiometricsUploadService';
+import { trace } from '@commandersuite/core';
 
 function avg(frameResults, key) {
   const vals = frameResults
@@ -64,6 +65,8 @@ export async function analyseSessionVideo({
 
   let currentTheta = initialTheta;
   let currentPhi = initialPhi;
+
+  resetMoveNetDiag();
 
   for (let i = 0; i < frames.length; i++) {
     const frame = frames[i];
@@ -188,6 +191,11 @@ export async function analyseSessionVideo({
   // coaching, matching "free tier does not get saved history".
   let analysisId = null;
   if (userTier !== 'free') {
+    // One line per analysis recording why the pose stage went the way it did.
+    // Without it a 0-detected run leaves no evidence behind: frame_data only
+    // stores detected rows, and the console output above reaches nothing in a
+    // Release build.
+    await trace(`[Pipeline] ${sessionId} frames=${frameResults.length} detected=${detectedCount} moveNet=${JSON.stringify(getMoveNetDiag())}`);
     analysisId = await AnalysisRepository.insertAnalysis({
       session_id: sessionId,
       video_start_utc: videoStartUtc || null,

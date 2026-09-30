@@ -3,14 +3,46 @@
 // Supports auto-tracking with constrained search window.
 
 import * as FileSystem from 'expo-file-system/legacy';
+import { trace } from '@commandersuite/core';
 
 let webviewRef = null;
 let isReady = false;
 let pendingFrames = {};
 let frameCounter = 0;
 
+// Diagnostics for the pose pipeline. Everything here previously went to
+// console.log/warn, which reaches nothing at all in a Release build — so a run
+// that produced *zero* detected frames looked identical to a run that worked,
+// and the frame_data row just said 0. These counters exist so a silent failure
+// leaves evidence that can be pulled off the device.
+let mountedAt = null;
+const diag = {
+  readyMs: null,
+  initErrors: 0,
+  framesSent: 0,
+  framesReplied: 0,
+  framesTimedOut: 0,
+  nullKeypoints: 0,
+  frameErrors: 0,
+};
+
+export function getMoveNetDiag() {
+  return { ...diag, isReady };
+}
+
+export function resetMoveNetDiag() {
+  diag.readyMs = null;
+  diag.initErrors = 0;
+  diag.framesSent = 0;
+  diag.framesReplied = 0;
+  diag.framesTimedOut = 0;
+  diag.nullKeypoints = 0;
+  diag.frameErrors = 0;
+}
+
 export function registerWebView(ref) {
   webviewRef = ref;
+  mountedAt = Date.now();
 }
 
 export function handleWebViewMessage(event) {
@@ -20,10 +52,14 @@ export function handleWebViewMessage(event) {
     if (msg.type === 'ready') {
       console.log('[MoveNet] WebView detector ready');
       isReady = true;
+      diag.readyMs = mountedAt != null ? Date.now() - mountedAt : null;
+      trace(`[MoveNet] detector ready in ${diag.readyMs}ms`);
       return;
     }
 
     if (msg.type === 'result') {
+      diag.framesReplied++;
+      if (!msg.keypoints) diag.nullKeypoints++;
       const pending = pendingFrames[msg.frameId];
       if (pending) {
         pending.resolve({
@@ -39,6 +75,14 @@ export function handleWebViewMessage(event) {
 
     if (msg.type === 'error') {
       console.warn('[MoveNet] WebView error:', msg.message);
+      // No frameId means the failure happened during detector init, which
+      // poisons every frame that follows — worth a trace line of its own.
+      if (msg.frameId == null) {
+        diag.initErrors++;
+        trace(`[MoveNet] INIT ERROR: ${msg.message}`);
+      } else {
+        diag.frameErrors++;
+      }
       const pending = pendingFrames[msg.frameId];
       if (pending) {
         pending.resolve({ keypoints: null, annotatedFrame: null, nextTheta: null, nextPhi: null });
@@ -88,6 +132,7 @@ export async function runPoseDetectionOnFrame(
   const base64  = await FileSystem.readAsStringAsync(framePath, { encoding: 'base64' });
   const frameId = `frame_${frameCounter++}`;
 
+  diag.framesSent++;
   return new Promise((resolve) => {
     pendingFrames[frameId] = { resolve };
 
@@ -106,6 +151,13 @@ export async function runPoseDetectionOnFrame(
     setTimeout(() => {
       if (pendingFrames[frameId]) {
         console.warn('[MoveNet] Frame timed out:', frameId);
+        diag.framesTimedOut++;
+        // Log the first, then sparsely: a dead detector times out on every
+        // single frame, and 100 identical lines would just rotate the useful
+        // earlier context out of the trace.
+        if (diag.framesTimedOut === 1 || diag.framesTimedOut % 25 === 0) {
+          trace(`[MoveNet] frame timeout #${diag.framesTimedOut} (frame ${frameId})`);
+        }
         pendingFrames[frameId].resolve({
           keypoints: null, annotatedFrame: null, nextTheta: null, nextPhi: null
         });
@@ -119,4 +171,5 @@ export function disposeDetector() {
   isReady = false;
   webviewRef = null;
   pendingFrames = {};
+  mountedAt = null;
 }

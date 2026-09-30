@@ -148,15 +148,25 @@ export const MOVENET_HTML = `<!DOCTYPE html>
     }
 
     // ── Rider apparent size ───────────────────────────────────────────────
-    // Pixel height of the confidently-detected keypoints. Torso-joint span
-    // rather than a full body box: MoveNet often misses ankles/wrists on a
-    // distant or partly-occluded rider, and a box that collapses when a foot
-    // drops out would look like a size change when nothing moved.
+    // Torso length: the vertical distance between the mid-shoulder and
+    // mid-hip points, requiring all four torso joints (5, 6, 11, 12) — the
+    // same four the confidence gate already insists on.
+    //
+    // Earlier this spanned *every* confident keypoint, which was wrong: that
+    // distance changes with whichever joints MoveNet happens to find, so
+    // gaining an ankle or losing a wrist looked like the rider changing size
+    // and rejected otherwise-good frames. Torso length depends only on joints
+    // that must already be present to reach this point, so it moves only when
+    // the rider's apparent size really does.
     function getRiderSize(keypoints) {
-      var vis = keypoints.filter(function(kp) { return kp && kp[2] >= MIN_TRACKING_CONFIDENCE; });
-      if (vis.length < 2) return null;
-      var ys = vis.map(function(kp) { return kp[1]; });
-      var h = Math.max.apply(null, ys) - Math.min.apply(null, ys);
+      var torsoIdx = [5, 6, 11, 12];
+      for (var i = 0; i < torsoIdx.length; i++) {
+        var kp = keypoints[torsoIdx[i]];
+        if (!kp || kp[2] < MIN_TRACKING_CONFIDENCE) return null;
+      }
+      var shoulderY = (keypoints[5][1] + keypoints[6][1]) / 2;
+      var hipY      = (keypoints[11][1] + keypoints[12][1]) / 2;
+      var h = Math.abs(hipY - shoulderY);
       return h > 0 ? { h: h } : null;
     }
 
