@@ -25,6 +25,38 @@ function avg(frameResults, key) {
   return Math.round((vals.reduce((a, b) => a + b, 0) / vals.length) * 10) / 10;
 }
 
+// The posture measurements the peer summary averages, and that the peak frame
+// is chosen to represent.
+const BIOMECH_KEYS = [
+  'left_knee_angle', 'right_knee_angle', 'back_angle_from_vertical',
+  'front_foot_pct', 'back_foot_pct', 'fin_load_kg',
+  'back_lever_factor', 'arm_leverage_ratio',
+];
+
+function biomechCount(frame) {
+  return BIOMECH_KEYS.reduce(
+    (n, k) => n + (frame[k] !== null && frame[k] !== undefined ? 1 : 0), 0
+  );
+}
+
+// Fastest detected frame when GPS correlated at least one, otherwise the frame
+// with the most posture measurements. Selecting by speed alone silently dropped
+// the entire biometrics upload whenever nothing correlated: uncorrelated frames
+// carry speed_kn = 0 (not null — see the frameResults push above), so no frame
+// ever beat the starting 0 and the chosen frame stayed null. A clip filed
+// against the wrong session, or a session whose watch was stopped before the
+// camera, therefore produced no peer sample at all. Returns null only when
+// nothing was detected, which is the one case with no measurement to upload.
+function pickPeakFrame(frameResults) {
+  const detected = frameResults.filter((f) => f.detected);
+  if (!detected.length) return null;
+  const withSpeed = detected.filter((f) => (Number(f.speed_kn) || 0) > 0);
+  if (withSpeed.length) {
+    return withSpeed.reduce((best, frame) => (frame.speed_kn > best.speed_kn ? frame : best));
+  }
+  return detected.reduce((best, frame) => (biomechCount(frame) > biomechCount(best) ? frame : best));
+}
+
 export async function analyseSessionVideo({
   videoUri,
   sessionId,
@@ -252,7 +284,7 @@ export async function analyseSessionVideo({
   // screen transition this function's return triggers. Every lookup
   // inside is independently guarded so a missing gear combo or weather
   // row just means fewer optional fields on the payload, not a thrown
-  // error — see BiometricsUploadService's own .catch(() => {}).
+  // error — a rejected upload is traced to ai-debug.log rather than dropped.
   //
   // app_version is omitted — expo-constants isn't installed in this app,
   // and adding a new dependency wasn't part of this task.
@@ -262,11 +294,14 @@ export async function analyseSessionVideo({
         const profile = await UserStore.getBiometrics();
         if (!profile?.biometric_category) return;
 
-        const peakFrame = frameResults.reduce(
-          (best, frame) => (frame.detected && frame.speed_kn > (best?.speed_kn ?? 0) ? frame : best),
-          null
-        );
-        if (!peakFrame) return;
+        const peakFrame = pickPeakFrame(frameResults);
+        if (!peakFrame) {
+          trace(`[Pipeline] biometrics upload skipped: no detected frames session=${sessionId}`);
+          return;
+        }
+        trace(`[Pipeline] biometrics peak frame time=${peakFrame.time_s}s ` +
+          `speed=${(Number(peakFrame.speed_kn) || 0) > 0 ? peakFrame.speed_kn : 'none'} ` +
+          `biomech=${biomechCount(peakFrame)}/${BIOMECH_KEYS.length} session=${sessionId}`);
 
         const session = await SessionRepository.getById(sessionId).catch(() => null);
         const weather = session?.date ? await WeatherRepository.getForDate(session.date).catch(() => null) : null;
@@ -293,7 +328,7 @@ export async function analyseSessionVideo({
           weight_band: bandParts.slice(2, 4).join('_'),
           leg_band: bandParts.slice(4, 6).join('_'),
           arm_band: bandParts.slice(6, 8).join('_'),
-          peak_speed_kn: peakFrame.speed_kn,
+          peak_speed_kn: (Number(peakFrame.speed_kn) || 0) > 0 ? peakFrame.speed_kn : null,
           // left = front, right = back — see ForceCalculator.js's convention.
           front_knee_angle: peakFrame.left_knee_angle ?? null,
           back_knee_angle: peakFrame.right_knee_angle ?? null,
@@ -308,7 +343,13 @@ export async function analyseSessionVideo({
           fin_size_cm: finSizeCm,
           sail_size_m2: sailSizeM2,
           sport: 'windsurf',
-        }).catch(() => {}); // silent fail — never block UI
+        }).catch((err) => {
+          // Still never blocks the UI, but the reason is now recorded: a
+          // server-side rejection was previously invisible, which is part of
+          // why the empty peer dataset was hard to explain. trace() writes to
+          // ai-debug.log, the only channel readable on a Release build.
+          trace(`[Pipeline] biometrics upload failed session=${sessionId}: ${err.message}`);
+        });
       } catch (err) {
         console.warn('[Pipeline] biometrics upload skipped:', err.message);
       }
