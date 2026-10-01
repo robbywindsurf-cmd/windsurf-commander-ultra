@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import { VideoView, useVideoPlayer } from 'expo-video';
 import * as ScreenOrientation from 'expo-screen-orientation';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { TierService, canAccess, AnalysisRepository, TrackpointRepository, describeFrontLeg, describeBackLeg, describeForwardLean } from '@commandersuite/core';
 import { analyseSessionVideo } from '../utils/poseAnalysisPipeline';
 import { videoUtcPlusSeconds } from '../utils/videoUtc';
@@ -73,6 +74,12 @@ export default function ClipSelectorScreen({ route, navigation }) {
   const [summary, setSummary]                 = useState(null);
   const [frameGps, setFrameGps]               = useState(null); // { speed_kn, hr } | null for the current reviewIndex
   const [gpsCoverage, setGpsCoverage]         = useState(undefined); // { count, first_ts, last_ts } | undefined while loading
+
+  // The review controls sit hard against the screen edge, which on a
+  // home-indicator device is a system gesture area — and in this screen's row
+  // layout the far end of that row can fall outside the visible column
+  // entirely. Insets keep them clear of both.
+  const insets = useSafeAreaInsets();
 
   useEffect(() => {
     TierService.getCachedTier().then(setUserTier);
@@ -299,7 +306,20 @@ export default function ClipSelectorScreen({ route, navigation }) {
               </View>
             )}
 
-            <View style={styles.reviewControls}>
+            <View
+              style={[
+                styles.reviewControls,
+                // Bottom edge is a system gesture area on a home-indicator
+                // device, and this row's outer buttons were reaching it and
+                // the column edge — which is why Close stopped responding
+                // while the inner Session button still worked.
+                {
+                  paddingBottom: 8 + insets.bottom,
+                  paddingLeft:   6 + insets.left,
+                  paddingRight:  6 + insets.right,
+                },
+              ]}
+            >
               <Text style={styles.reviewCounter}>
                 Frame {reviewIndex + 1} / {annotatedFrames.length}
                 {frameGps ? `  ·  ${frameGps.speed_kn?.toFixed(1) ?? '—'} kn${frameGps.hr ? `  ·  ${frameGps.hr} bpm` : ''}` : ''}
@@ -667,10 +687,18 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(6,31,46,0.9)', paddingVertical: 8, paddingHorizontal: 6,
   },
   reviewCounter: { color: TEXT, fontSize: 12, textAlign: 'center', marginBottom: 6 },
-  reviewBtnRow:  { flexDirection: 'row', gap: 6, justifyContent: 'center' },
+  // flexWrap: four buttons at a proper touch size do not fit the video column
+  // when the column is narrow, and without wrapping the outermost ones (Close
+  // in particular) were pushed past the column edge and stopped receiving taps.
+  // Wrapping keeps every button inside the column in either orientation.
+  reviewBtnRow:  { flexDirection: 'row', flexWrap: 'wrap', gap: 8, justifyContent: 'center' },
+  // minHeight/minWidth 44 is Apple's minimum touch target — at paddingVertical
+  // 8 these rendered ~31pt tall, under the guideline on top of being clipped.
   reviewBtn: {
-    paddingVertical: 8, paddingHorizontal: 10,
+    minHeight: 44, minWidth: 44,
+    paddingVertical: 10, paddingHorizontal: 14,
     backgroundColor: 'rgba(26,138,181,0.3)', borderRadius: 8,
+    alignItems: 'center', justifyContent: 'center',
   },
   reviewBtnText: { color: TEXT, fontSize: 12, fontWeight: '600' },
 
