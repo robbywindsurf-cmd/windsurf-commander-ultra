@@ -17,3 +17,10 @@ export const DEV_TOOLS = true;
 // policy URL, and App Review checks that it resolves.
 export const PRIVACY_POLICY_URL = 'https://windsurf.surfkat.co.uk/privacy';
 export const TERMS_OF_SERVICE_URL = 'https://windsurf.surfkat.co.uk/terms';
+
+// Anonymised peer-comparison aggregate for a biometric category. See the
+// windsurf-category-summary n8n workflow: the client sends its exact 4-band
+// key and the workflow widens it to neighbouring bands when that key alone has
+// too few riders, so the response may cover nearby profiles. Returns
+// { found: false, sample_count, minimum_samples_required } below the minimum.
+export const PEER_SUMMARY_URL = 'https://windsurf.surfkat.co.uk/webhook/windsurf-category-summary';

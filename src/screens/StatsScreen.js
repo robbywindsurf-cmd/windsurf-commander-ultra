@@ -4,6 +4,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import Header from '../components/Header';
 import SharedCard from '../components/SharedCard';
 import WeightTrendChart from '../components/WeightTrendChart';
+import PeerComparisonTable from '../components/PeerComparisonTable';
 import { StatsService } from '../services/StatsService';
 import { colors } from '../theme';
 
@@ -28,6 +29,7 @@ const FULL_ANALYSIS_QUESTION =
 export default function StatsScreen({ navigation }) {
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [peer, setPeer] = useState(null);
   const currentYear = String(new Date().getFullYear());
 
   useFocusEffect(
@@ -44,6 +46,19 @@ export default function StatsScreen({ navigation }) {
           if (!cancelled) setLoading(false);
         }
       })();
+
+      // Loaded separately and deliberately not awaited by the block above: peer
+      // comparison may hit the network, and the rest of this screen is entirely
+      // local, so it must not wait on it or fail with it.
+      (async () => {
+        try {
+          const result = await StatsService.getPeerComparison();
+          if (!cancelled) setPeer(result);
+        } catch (err) {
+          if (!cancelled) setPeer({ status: 'unavailable', reason: err.message });
+        }
+      })();
+
       return () => { cancelled = true; };
     }, [])
   );
@@ -181,6 +196,9 @@ export default function StatsScreen({ navigation }) {
           </SharedCard>
         </>
       )}
+
+      {/* Peer comparison — loads after the local stats, may fetch from Oracle */}
+      <PeerComparisonTable peer={peer} personalBestKn={stats?.personalBest?.speedKn} />
     </ScrollView>
   );
 }
