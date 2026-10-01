@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet,
   Modal, FlatList, ActivityIndicator, NativeModules,
@@ -319,20 +319,17 @@ export default function VideoScreen({ navigation }) {
       await new Promise(r => setTimeout(r, 700));
       setImportingFile(null);
 
-      if (matched) {
-        const newVideo = {
-          uri, fname,
-          session_id:     matched.session_id,
-          sessionName:    matched.name,
-          date:           matched.date,
-          video_start_utc: videoStartUtc,
-        };
-        const updated = [...importedVideos, newVideo];
-        setImportedVideos(updated);
-        await saveVideos(updated);
-      } else {
-        setPendingImport({ uri, fname, videoStartUtc });
-      }
+      // Always ask which session, even when the GPS matched one. Attaching
+      // silently on a match is what removed the confirmation step: the rider
+      // used to see the clip's GPS start time written on screen and then choose
+      // the session from the list, and without that a wrong match went
+      // unnoticed (the clip then analysed cleanly but correlated no GPS, so it
+      // produced no speeds). The matched session is offered first, so
+      // confirming it is still a single tap.
+      setPendingImport({
+        uri, fname, videoStartUtc,
+        suggestedSessionId: matched?.session_id || null,
+      });
 
     } catch (err) {
       console.warn('[VideoScreen] import error:', err.message);
@@ -358,6 +355,16 @@ export default function VideoScreen({ navigation }) {
   }
 
   function cancelImport() { setPendingImport(null); }
+
+  // The auto-matched session, offered first so confirming it is one tap. The
+  // rider still gets to see the clip's GPS start time and pick another.
+  const sessionOptions = useMemo(() => {
+    const suggestedId = pendingImport?.suggestedSessionId;
+    if (!suggestedId) return allSessions;
+    const suggested = allSessions.filter((s) => s.session_id === suggestedId);
+    if (!suggested.length) return allSessions;
+    return [...suggested, ...allSessions.filter((s) => s.session_id !== suggestedId)];
+  }, [allSessions, pendingImport?.suggestedSessionId]);
 
   // Retrofits video_start_utc (and re-runs session matching) onto videos
   // imported before filename-based UTC extraction existed — that value is
@@ -457,7 +464,7 @@ export default function VideoScreen({ navigation }) {
               </Text>
             )}
             <FlatList showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled"
-              data={allSessions}
+              data={sessionOptions}
               keyExtractor={item => item.session_id || item.date}
               style={styles.modalList}
               renderItem={({ item }) => (
@@ -469,6 +476,10 @@ export default function VideoScreen({ navigation }) {
                   <Text style={styles.modalRowDate}>
                     {item.date}{item.start_time ? ` · ${item.start_time}` : ''}
                   </Text>
+                  {!!pendingImport?.suggestedSessionId &&
+                    item.session_id === pendingImport.suggestedSessionId && (
+                    <Text style={styles.modalSuggest}>Suggested — GPS time is closest</Text>
+                  )}
                 </TouchableOpacity>
               )}
             />
@@ -715,7 +726,9 @@ const styles = StyleSheet.create({
   },
   modalTitle:    { color: TEXT, fontSize: 16, fontWeight: '700', marginBottom: 2 },
   modalSubtitle: { color: 'rgba(205,232,240,0.5)', fontSize: 12, marginBottom: 4 },
-  modalGps:      { color: SKY, fontSize: 11, marginBottom: 8 },
+  // The clip's GPS start time is the cue this screen exists to show before the
+  // session is chosen, so it is sized and coloured to be read at a glance.
+  modalGps:      { color: SKY, fontSize: 15, fontWeight: '700', marginTop: 2, marginBottom: 8 },
   modalList:     { marginTop: 4 },
   modalRow: {
     paddingVertical: 10,
@@ -723,6 +736,7 @@ const styles = StyleSheet.create({
   },
   modalRowTitle: { color: TEXT, fontSize: 14, fontWeight: '500' },
   modalRowDate:  { color: 'rgba(205,232,240,0.4)', fontSize: 11, marginTop: 2 },
+  modalSuggest:  { color: SKY, fontSize: 11, marginTop: 2 },
   modalCancelBtn: { marginTop: 12, paddingVertical: 10, alignItems: 'center' },
   modalCancelBtnText: { color: DANGER, fontSize: 13, fontWeight: '600' },
 });
