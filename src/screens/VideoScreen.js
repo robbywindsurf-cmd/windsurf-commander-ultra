@@ -17,6 +17,7 @@ import { MOVENET_HTML } from '../utils/movenetWebView.js';
 import { GPMF_HTML } from '../utils/gpmfWebView.js';
 import { registerGPMFWebView, handleGPMFMessage, extractVideoStartTime, disposeGPMF } from '../utils/gpmfExtractor.js';
 import { extractMp4CreationTime } from '../utils/mp4CreationTime.js';
+import { parseVideoStartUtc, videoUtcPlusSeconds, formatLocalTime } from '../utils/videoUtc';
 import { colors } from '../theme';
 
 const DEEP = colors.deep;
@@ -75,19 +76,26 @@ async function ensureVideosDir() {
 function autoMatchSession(videoStartUtc, allSessions) {
   if (!videoStartUtc || !allSessions.length) return null;
   const videoDate = `${videoStartUtc.slice(0,4)}-${videoStartUtc.slice(4,6)}-${videoStartUtc.slice(6,8)}`;
-  const videoSecs = parseInt(videoStartUtc.slice(9,11))*3600
-                  + parseInt(videoStartUtc.slice(11,13))*60
-                  + parseInt(videoStartUtc.slice(13,15));
   const same = allSessions.filter(s => s.date === videoDate);
   if (!same.length) return null;
   if (same.length === 1) return same[0];
+
+  // The clip's start is UTC; each session's start_time is the watch's LOCAL
+  // wall-clock time. Subtracting the two as raw times-of-day is off by the UTC
+  // offset — a full hour in BST — which flipped the pick to the wrong session
+  // whenever two same-day sessions straddled the midpoint (the usual morning/
+  // afternoon pattern). Compare real instants instead, and let the device's own
+  // DST rules interpret the local start_time.
+  const clipAt = parseVideoStartUtc(videoStartUtc);
+  if (!clipAt) return null;
+  const [y, mo, d] = videoDate.split('-').map(Number);
   let best = null, bestDiff = Infinity;
   for (const s of same) {
-    if (s.start_time) {
-      const [sh, sm] = s.start_time.split(':').map(Number);
-      const diff = Math.abs(videoSecs - (sh*3600 + sm*60));
-      if (diff < bestDiff) { bestDiff = diff; best = s; }
-    }
+    if (!s.start_time) continue;
+    const [sh, sm, ss] = s.start_time.split(':').map(Number);
+    const sessionAt = new Date(y, mo - 1, d, sh, sm, ss || 0);
+    const diff = Math.abs(clipAt - sessionAt) / 1000;
+    if (diff < bestDiff) { bestDiff = diff; best = s; }
   }
   return bestDiff < 10800 ? best : null;
 }
@@ -443,7 +451,10 @@ export default function VideoScreen({ navigation }) {
             <Text style={styles.modalTitle}>Which session is this from?</Text>
             <Text style={styles.modalSubtitle} numberOfLines={1}>{pendingImport?.fname}</Text>
             {pendingImport?.videoStartUtc && (
-              <Text style={styles.modalGps}>📍 GPS: {pendingImport.videoStartUtc}</Text>
+              <Text style={styles.modalGps}>
+                📍 Clip GPS start:{' '}
+                {formatLocalTime(videoUtcPlusSeconds(pendingImport.videoStartUtc, 0)) || pendingImport.videoStartUtc}
+              </Text>
             )}
             <FlatList showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled"
               data={allSessions}

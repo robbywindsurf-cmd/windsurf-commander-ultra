@@ -3,7 +3,7 @@
 // Ported from production app — only the post-analysis navigation target changed
 // (Chat webhook screen doesn't exist here; goes to local SessionDetail instead).
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, ScrollView,
   TouchableWithoutFeedback, Image,
@@ -13,7 +13,7 @@ import * as ScreenOrientation from 'expo-screen-orientation';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { TierService, canAccess, AnalysisRepository, TrackpointRepository, describeFrontLeg, describeBackLeg, describeForwardLean } from '@commandersuite/core';
 import { analyseSessionVideo } from '../utils/poseAnalysisPipeline';
-import { videoUtcPlusSeconds } from '../utils/videoUtc';
+import { videoUtcPlusSeconds, formatLocalTime } from '../utils/videoUtc';
 import { colors } from '../theme';
 
 async function unlockToPortrait() {
@@ -288,6 +288,49 @@ export default function ClipSelectorScreen({ route, navigation }) {
     return 'No GPS point within 3s of this frame';
   })();
 
+  // Clip-vs-session sanity check. The clip's own start time and the selected
+  // session's GPS window were both already available but never shown together,
+  // so a clip filed against the wrong session gave no visible clue: it analysed
+  // cleanly, then correlated 0 frames, producing no speeds and no peer data.
+  // Both times are rendered in local time so they can be compared at a glance
+  // against the clip actually being watched.
+  const sessionCheck = useMemo(() => {
+    const clipUtc = videoStartUtc ? videoUtcPlusSeconds(videoStartUtc, (startMs || 0) / 1000) : null;
+    if (!clipUtc) return null;
+    const clipDate = new Date(clipUtc);
+    if (Number.isNaN(clipDate.getTime())) return null;
+
+    const clipText = `Clip starts ${formatLocalTime(clipUtc)}`;
+    if (gpsCoverage === undefined) return { clipText, gpsText: 'Checking session GPS…', warning: null };
+
+    const toDate = (ts) => {
+      const iso = ts.includes('T') ? ts : ts.replace(' ', 'T');
+      const d = new Date(iso.endsWith('Z') ? iso : iso + 'Z');
+      return Number.isNaN(d.getTime()) ? null : d;
+    };
+    const first = gpsCoverage?.count ? toDate(gpsCoverage.first_ts) : null;
+    const last  = gpsCoverage?.count ? toDate(gpsCoverage.last_ts)  : null;
+    if (!first || !last) {
+      return { clipText, gpsText: 'No GPS track for this session — clip time can’t be checked', warning: null };
+    }
+
+    const gpsText = `Session GPS ${formatLocalTime(gpsCoverage.first_ts)} – ` +
+      `${formatLocalTime(gpsCoverage.last_ts)}`;
+
+    let outsideSeconds = 0;
+    let direction = '';
+    if (clipDate < first) { outsideSeconds = (first - clipDate) / 1000; direction = 'before'; }
+    else if (clipDate > last) { outsideSeconds = (clipDate - last) / 1000; direction = 'after'; }
+
+    let warning = null;
+    if (outsideSeconds > 0) {
+      const mins = Math.round(outsideSeconds / 60);
+      const gap = mins >= 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : `${mins} min`;
+      warning = `This clip starts ${gap} ${direction} the session’s GPS — check the right session is selected.`;
+    }
+    return { clipText, gpsText, warning };
+  }, [videoStartUtc, startMs, gpsCoverage]);
+
   return (
     <View style={styles.container}>
 
@@ -510,6 +553,16 @@ export default function ClipSelectorScreen({ route, navigation }) {
             )}
           </View>
         </TouchableWithoutFeedback>
+      )}
+
+      {!!sessionCheck && (
+        <View style={styles.sessionCheck}>
+          <Text style={styles.sessionCheckLine}>{sessionCheck.clipText}</Text>
+          <Text style={styles.sessionCheckLine}>{sessionCheck.gpsText}</Text>
+          {!!sessionCheck.warning && (
+            <Text style={styles.sessionCheckWarning}>⚠️ {sessionCheck.warning}</Text>
+          )}
+        </View>
       )}
 
       {mode !== 'review' && mode !== 'summary' && (
@@ -771,5 +824,8 @@ const styles = StyleSheet.create({
   cancelBtnText: { color: DANGER, fontSize: 13, fontWeight: '700' },
 
   hintText:  { color: 'rgba(205,232,240,0.4)', fontSize: 10, marginTop: 8, textAlign: 'center' },
+  sessionCheck:        { marginTop: 8, alignSelf: 'center', alignItems: 'center', paddingHorizontal: 8 },
+  sessionCheckLine:    { color: 'rgba(205,232,240,0.65)', fontSize: 11, textAlign: 'center' },
+  sessionCheckWarning: { color: DANGER, fontSize: 11, marginTop: 4, textAlign: 'center', maxWidth: 460 },
   errorText: { color: DANGER, fontSize: 11, marginTop: 6 },
 });
