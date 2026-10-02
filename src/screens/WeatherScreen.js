@@ -13,6 +13,7 @@ import { ALL_BEACHES, seedBeaches } from '../utils/seedBeaches';
 import { WeatherService, fetchBeachWeather, isWeatherStale, conditionIndicator, degreesToCompass } from '../services/WeatherService';
 import { getTideForBeach, getTideSeriesForBeach, findTideExtremes } from '../utils/tideModel';
 import WindTideChart from '../components/WindTideChart';
+import ErrorBoundary from '../components/ErrorBoundary';
 import { colors } from '../theme';
 import Markdown from 'react-native-markdown-display';
 
@@ -497,8 +498,9 @@ export default function WeatherScreen() {
       )}
 
       <Text style={styles.sectionLabel}>Beach Checks</Text>
-      <View style={styles.beachChecksGrid}>
-        {beachChecks.map((check) => (
+      <ErrorBoundary label="Beach checks">
+        <View style={styles.beachChecksGrid}>
+          {beachChecks.map((check) => (
           <TouchableOpacity
             activeOpacity={0.7}
             key={check.beach.id}
@@ -509,8 +511,9 @@ export default function WeatherScreen() {
             <Text style={styles.checkCardName} numberOfLines={1}>{check.beach.name}</Text>
             <Text style={styles.checkCardCondition}>{check.condition.emoji} {check.condition.label}</Text>
           </TouchableOpacity>
-        ))}
-      </View>
+          ))}
+        </View>
+      </ErrorBoundary>
 
       <Modal statusBarTranslucent visible={pickerVisible} animationType="slide" onRequestClose={() => setPickerVisible(false)}>
         <SafeAreaView style={styles.modal} edges={['top', 'bottom']}>
@@ -617,17 +620,19 @@ export default function WeatherScreen() {
 
                     <Text style={styles.detailSectionLabel}>Wind &amp; Tide:</Text>
                     {detailTide ? (
-                      <WindTideChart
-                        hourly={parseHourlyForecast(selectedCheck.weather)}
-                        tideSeries={detailTide.series}
-                        extremes={detailTide.extremes}
-                        windIdealMin={selectedCheck.beach.ideal_wind_kn_min}
-                        windIdealMax={selectedCheck.beach.ideal_wind_kn_max}
-                        minTideM={selectedCheck.beach.min_tide_m}
-                        isChartDatum={detailTide.isChartDatum}
-                        tideDatumLabel={tideByBeach[selectedCheck.beach.name]?.datum}
-                        width={Math.max(260, Math.min(screenWidth - 72, 420))}
-                      />
+                      <ErrorBoundary label="Wind & tide chart">
+                        <WindTideChart
+                          hourly={parseHourlyForecast(selectedCheck.weather)}
+                          tideSeries={detailTide.series}
+                          extremes={detailTide.extremes}
+                          windIdealMin={selectedCheck.beach.ideal_wind_kn_min}
+                          windIdealMax={selectedCheck.beach.ideal_wind_kn_max}
+                          minTideM={selectedCheck.beach.min_tide_m}
+                          isChartDatum={detailTide.isChartDatum}
+                          tideDatumLabel={tideByBeach[selectedCheck.beach.name]?.datum}
+                          width={Math.max(260, Math.min(screenWidth - 72, 420))}
+                        />
+                      </ErrorBoundary>
                     ) : (
                       <ActivityIndicator color={colors.accent} style={{ marginVertical: 16 }} />
                     )}
