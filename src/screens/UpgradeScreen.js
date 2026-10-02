@@ -5,12 +5,15 @@ import { colors } from '../theme';
 import { PRIVACY_POLICY_URL, TERMS_OF_SERVICE_URL } from '../config';
 import { openExternalLink } from '../utils/openExternalLink';
 
+// Peer comparison is deliberately not listed here: it is currently available
+// to everyone rather than gated, so advertising it as a paid benefit would
+// describe something the app does not restrict. Add it back only when
+// PEER_COMPARISON/PEER_UNLIMITED are actually enforced.
 const PREMIUM_FEATURES = [
   '5 analyses per month',
   'Full skeleton overlay',
   'AI coaching reports',
   'Cross-session comparison',
-  '5 peer comparisons/month',
   'Custom beach list (5 beaches)',
   'IMU 6-axis integration',
   'Morning weather via Telegram',
@@ -22,7 +25,6 @@ const ULTIMATE_FEATURES = [
   '12 analyses per month',
   'Global cloud RAG analysis',
   'Unlimited beaches',
-  'Unlimited peer comparison',
   'IMU 9-axis',
   'Peak Moment video export',
 ];
