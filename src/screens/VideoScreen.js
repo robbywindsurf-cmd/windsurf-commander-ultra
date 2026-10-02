@@ -66,6 +66,15 @@ function extractUtcFromFilename(fname) {
   return null;
 }
 
+// The stored source string, in the rider's terms. The GoPro's satellite fix
+// is exact; the camera's own clock is a last-resort fallback that drifts.
+function utcSourceLabel(source) {
+  if (source === 'gpmf_gpsu') return 'GoPro GPS time (satellite fix)';
+  if (source === 'filename') return 'From the filename';
+  if (typeof source === 'string' && source.startsWith('mvhd')) return 'Camera clock — may drift';
+  return null;
+}
+
 async function ensureVideosDir() {
   const info = await FileSystem.getInfoAsync(VIDEOS_DIR);
   if (!info.exists) {
@@ -327,7 +336,7 @@ export default function VideoScreen({ navigation }) {
       // produced no speeds). The matched session is offered first, so
       // confirming it is still a single tap.
       setPendingImport({
-        uri, fname, videoStartUtc,
+        uri, fname, videoStartUtc, videoStartUtcSource: utcSource,
         suggestedSessionId: matched?.session_id || null,
       });
 
@@ -347,6 +356,9 @@ export default function VideoScreen({ navigation }) {
       sessionName,
       date,
       video_start_utc: pendingImport.videoStartUtc || null,
+      // Which source the start time came from, so the sheet can say whether it
+      // is satellite GPS (exact) or the camera's own clock (can drift).
+      video_start_utc_source: pendingImport.videoStartUtcSource || null,
     };
     const updated = [...importedVideos, newVideo];
     setImportedVideos(updated);
@@ -367,23 +379,38 @@ export default function VideoScreen({ navigation }) {
   }, [allSessions, pendingImport?.suggestedSessionId]);
 
   // Retrofits video_start_utc (and re-runs session matching) onto videos
-  // imported before filename-based UTC extraction existed — that value is
-  // computed once at import time and never revisited otherwise, so an
-  // already-imported video would keep a stale null forever without this.
+  // imported before the start time could be read — that value is computed once
+  // at import time and never revisited otherwise, so an already-imported video
+  // would keep a stale null forever without this, leaving its sessions
+  // unverifiable. Uses the same chain as import: filename, then the GoPro's
+  // GPMF GPS fix, then the camera clock.
   async function repairVideoTimestamps() {
     let changed = 0;
-    const updated = importedVideos.map((v) => {
-      if (v.video_start_utc) return v;
-      const filenameUtc = extractUtcFromFilename(v.fname);
-      if (!filenameUtc) return v;
+    const updated = [];
+    for (const v of importedVideos) {
+      if (v.video_start_utc) { updated.push(v); continue; }
+
+      let videoStartUtc = extractUtcFromFilename(v.fname);
+      let source = videoStartUtc ? 'filename' : null;
+      if (!videoStartUtc) {
+        videoStartUtc = (await extractVideoStartTime(v.uri))?.videoStartUtc || null;
+        if (videoStartUtc) source = 'gpmf_gpsu';
+      }
+      if (!videoStartUtc) {
+        videoStartUtc = await extractMp4CreationTime(v.uri);
+        if (videoStartUtc) source = 'mvhd.creation_time (camera clock — no GPS fix found)';
+      }
+      if (!videoStartUtc) { updated.push(v); continue; }
+
       changed += 1;
-      const matched = v.session_id ? null : autoMatchSession(filenameUtc, allSessions);
-      return {
+      const matched = v.session_id ? null : autoMatchSession(videoStartUtc, allSessions);
+      updated.push({
         ...v,
-        video_start_utc: filenameUtc,
+        video_start_utc: videoStartUtc,
+        video_start_utc_source: source,
         ...(matched ? { session_id: matched.session_id, sessionName: matched.name, date: matched.date } : {}),
-      };
-    });
+      });
+    }
     if (changed > 0) {
       setImportedVideos(updated);
       await saveVideos(updated);
@@ -457,10 +484,22 @@ export default function VideoScreen({ navigation }) {
           <View style={styles.modalBox}>
             <Text style={styles.modalTitle}>Which session is this from?</Text>
             <Text style={styles.modalSubtitle} numberOfLines={1}>{pendingImport?.fname}</Text>
-            {pendingImport?.videoStartUtc && (
-              <Text style={styles.modalGps}>
-                📍 Clip GPS start:{' '}
-                {formatLocalTime(videoUtcPlusSeconds(pendingImport.videoStartUtc, 0)) || pendingImport.videoStartUtc}
+            {pendingImport?.videoStartUtc ? (
+              <>
+                <Text style={styles.modalGps}>
+                  📍 Clip start:{' '}
+                  {formatLocalTime(videoUtcPlusSeconds(pendingImport.videoStartUtc, 0)) || pendingImport.videoStartUtc}
+                </Text>
+                {!!utcSourceLabel(pendingImport.videoStartUtcSource) && (
+                  <Text style={styles.modalGpsSource}>{utcSourceLabel(pendingImport.videoStartUtcSource)}</Text>
+                )}
+              </>
+            ) : (
+              // Never leave this blank: with no time on screen there is nothing
+              // to check the session against, which is how a clip gets filed
+              // against the wrong one unnoticed.
+              <Text style={styles.modalGpsMissing}>
+                ⚠️ No GPS time found in this clip — there is nothing to check the session against, so pick carefully.
               </Text>
             )}
             <FlatList showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled"
@@ -729,6 +768,8 @@ const styles = StyleSheet.create({
   // The clip's GPS start time is the cue this screen exists to show before the
   // session is chosen, so it is sized and coloured to be read at a glance.
   modalGps:      { color: SKY, fontSize: 15, fontWeight: '700', marginTop: 2, marginBottom: 8 },
+  modalGpsSource: { color: 'rgba(205,232,240,0.5)', fontSize: 11, marginTop: -4, marginBottom: 8 },
+  modalGpsMissing: { color: DANGER, fontSize: 12, marginTop: 2, marginBottom: 8 },
   modalList:     { marginTop: 4 },
   modalRow: {
     paddingVertical: 10,

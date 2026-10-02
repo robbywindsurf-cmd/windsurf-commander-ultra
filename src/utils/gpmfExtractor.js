@@ -70,7 +70,32 @@ export function handleGPMFMessage(event) {
 }
 
 // ── MAIN EXTRACTION FUNCTION ──────────────────────────────────────────────
-// Reads the last chunk of the video file and sends it to the WebView for parsing.
+// Sends one chunk to the hidden WebView and resolves with its parse result
+// ({ videoStartUtc, gpsPoints }) or null on timeout/error.
+
+function askWebViewForChunk(base64, fileSize, chunkStart) {
+  return new Promise((resolve) => {
+    pendingExtraction = { resolve };
+
+    gpmfWebViewRef.current.postMessage(JSON.stringify({
+      type: 'extractGPS',
+      base64,
+      fileSize,
+      chunkStart,
+    }));
+
+    // 30 second timeout — large files take longer to decode
+    setTimeout(() => {
+      if (pendingExtraction) {
+        console.warn('[GPMF] Extraction timed out after 30s');
+        pendingExtraction.resolve(null);
+        pendingExtraction = null;
+      }
+    }, 30000);
+  });
+}
+
+// Walks the file from the start for the earliest GPSU sample.
 // Returns { videoStartUtc, gpsPoints } or null if extraction fails.
 
 export async function extractVideoStartTime(fileUri) {
@@ -102,53 +127,44 @@ export async function extractVideoStartTime(fileUri) {
 
     const fileSize = info.size;
     const fname = fileUri.split('/').pop() || '';
-    const is360 = fname.toLowerCase().endsWith('.360');
 
-    // Read from the START of the file, not the tail. GPMF telemetry
-    // samples are interleaved throughout `mdat` in recording order —
-    // `mdat` comes early in a GoPro .360's layout, with the `moov` index
-    // atom at the very end. An earlier version of this code read the tail
-    // specifically to find `moov` (true, that's where the index lives),
-    // but that conflated the index's location with where the telemetry
-    // *samples* live — reading the tail grabbed a real GPSU marker, just
-    // one from late in the recording, silently mislabelling it as the
-    // video's start time. The earliest GPSU marker — i.e. the true
-    // satellite-derived start time — is near the start of the file. 8MB
-    // (up from 2MB) gives margin past any header/thumbnail boxes before
-    // mdat's telemetry begins.
+    // Walk forward from the start of the file until the earliest GPSU sample
+    // is found. GPMF telemetry is interleaved throughout `mdat` in recording
+    // order — `mdat` comes early in a GoPro .360's layout, with the `moov`
+    // index atom at the very end — so the earliest GPSU marker is somewhere
+    // near the start, but at a position that varies with the video bitrate
+    // and the sample layout, not at a fixed offset. A real .360 (GS010117)
+    // has its first GPSU at 8.61MB, just past a single 8MB read, which
+    // returned nothing and left the import screen with no time to display.
+    // Chunks are cheap to read but expensive to decode, so each one is first
+    // checked in JS for the marker and only sent to the WebView if present.
+    // Bounded, so a file with no telemetry costs a few reads rather than a
+    // scan of the whole recording.
     const chunkSize = 8 * 1024 * 1024;
-    const position = 0;
-    const length = Math.min(chunkSize, fileSize);
+    const maxBytes = 48 * 1024 * 1024;
 
-    console.log('[GPMF] Reading first', Math.round(length / 1024 / 1024) + 'MB of', Math.round(fileSize / 1024 / 1024) + 'MB file:', fname);
+    for (let position = 0; position < Math.min(maxBytes, fileSize); position += chunkSize) {
+      const length = Math.min(chunkSize, fileSize - position);
 
-    const base64 = await FileSystem.readAsStringAsync(fileUri, {
-      encoding: 'base64',
-      position,
-      length,
-    });
+      const base64 = await FileSystem.readAsStringAsync(fileUri, {
+        encoding: 'base64',
+        position,
+        length,
+      });
 
-    console.log('[GPMF] Chunk read successfully, sending to WebView...');
+      let hasMarker = true;
+      try { hasMarker = atob(base64).includes('GPSU'); } catch { hasMarker = true; }
+      if (!hasMarker) continue;
 
-    return new Promise((resolve) => {
-      pendingExtraction = { resolve };
+      console.log('[GPMF] Sending', Math.round(length / 1024 / 1024) + 'MB chunk at',
+        Math.round(position / 1024 / 1024) + 'MB of', Math.round(fileSize / 1024 / 1024) + 'MB file:', fname);
 
-      gpmfWebViewRef.current.postMessage(JSON.stringify({
-        type: 'extractGPS',
-        base64,
-        fileSize,
-        chunkStart: position,
-      }));
+      const result = await askWebViewForChunk(base64, fileSize, position);
+      if (result?.videoStartUtc) return result;
+    }
 
-      // 30 second timeout — large files take longer to decode
-      setTimeout(() => {
-        if (pendingExtraction) {
-          console.warn('[GPMF] Extraction timed out after 30s');
-          pendingExtraction.resolve(null);
-          pendingExtraction = null;
-        }
-      }, 30000);
-    });
+    console.warn('[GPMF] No GPSU found in the first', Math.round(maxBytes / 1024 / 1024) + 'MB of', fname);
+    return null;
 
   } catch (err) {
     console.warn('[GPMF] Failed to read file chunk:', err.message);
