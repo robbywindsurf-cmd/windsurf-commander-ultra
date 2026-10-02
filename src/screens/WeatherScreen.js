@@ -5,7 +5,7 @@ import {
 import { useFocusEffect } from '@react-navigation/native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { WeatherRepository, UserStore, TierService } from '@commandersuite/core';
+import { WeatherRepository, UserStore, TierService, EquipmentRepository } from '@commandersuite/core';
 import Header from '../components/Header';
 import SharedCard from '../components/SharedCard';
 import { ALL_BEACHES, seedBeaches } from '../utils/seedBeaches';
@@ -72,6 +72,16 @@ async function fetchAndCacheWeather(beach) {
   return forecast;
 }
 
+// One quiver combo as the rider sees it: "Fox 120L + Cosmic 7.5m". Boards are
+// sized in litres and sails in m², both stored as TEXT, so the size is only
+// appended when the equipment actually has one.
+function formatCombo(combo) {
+  if (!combo) return null;
+  const board = [combo.board_name, combo.board_size ? `${combo.board_size}L` : null].filter(Boolean).join(' ');
+  const sail  = [combo.sail_name,  combo.sail_size  ? `${combo.sail_size}m`  : null].filter(Boolean).join(' ');
+  return [board, sail].filter(Boolean).join(' + ') || combo.name || null;
+}
+
 function parseHourlyForecast(weather) {
   if (!weather?.forecast_json) return [];
   try {
@@ -88,6 +98,7 @@ export default function WeatherScreen() {
   const insets = useSafeAreaInsets();
   const [selectedNames, setSelectedNames] = useState([]);
   const [forecasts, setForecasts] = useState({});
+  const [gearByBeach, setGearByBeach] = useState({}); // beach name -> formatted combo, or null
   const [loading, setLoading] = useState(false);
   const [pickerVisible, setPickerVisible] = useState(false);
   const [pendingSelection, setPendingSelection] = useState([]);
@@ -272,6 +283,22 @@ export default function WeatherScreen() {
         }
       }
       setForecasts(results);
+      // Gear is matched from the local quiver, so it costs nothing to recompute
+      // and stays correct if the quiver changes without a weather refresh.
+      // Only asked for once a wind figure exists: the matcher's wind bounds
+      // reject a null, which would otherwise silently return no combos.
+      const gear = {};
+      await Promise.all(Object.entries(results).map(async ([name, w]) => {
+        if (w?.best_wind_kn == null) { gear[name] = null; return; }
+        try {
+          const combos = await EquipmentRepository.getMatchingGearCombos(w.best_wind_kn, w.wave_height_m, 1);
+          gear[name] = formatCombo(combos?.[0]);
+        } catch (err) {
+          console.warn('[Weather] gear match failed for', name, err.message);
+          gear[name] = null;
+        }
+      }));
+      setGearByBeach(gear);
     } finally {
       setLoading(false);
     }
@@ -347,11 +374,26 @@ export default function WeatherScreen() {
               {f ? (
                 <>
                   <Text style={styles.line}>
-                    Wind: {f.best_wind_kn ?? '—'}{f.best_gust_kn != null ? ` (gusts ${f.best_gust_kn})` : ''} kn {compass(f.best_wind_dir)} · Best time {f.best_time ?? '—'}
+                    <Text style={styles.lineLabel}>Wind: </Text>
+                    {f.best_wind_kn ?? '—'}{f.best_gust_kn != null ? ` (gusts ${f.best_gust_kn})` : ''} kn{' '}
+                    {compass(f.best_wind_dir)}{f.best_wind_dir != null ? ` (${f.best_wind_dir}°)` : ''}
                   </Text>
                   <Text style={styles.line}>
-                    Wave: {f.wave_height_m != null ? `${f.wave_height_m} m` : '—'} · Temp: {f.temperature_c != null ? `${f.temperature_c}°C` : '—'}
+                    <Text style={styles.lineLabel}>Best time: </Text>{f.best_time ?? '—'}
                   </Text>
+                  <Text style={styles.line}>
+                    <Text style={styles.lineLabel}>Waves: </Text>
+                    {f.wave_height_m != null ? `${f.wave_height_m} m` : '—'}
+                    {'   '}
+                    <Text style={styles.lineLabel}>Temp: </Text>
+                    {f.temperature_c != null ? `${f.temperature_c}°C` : '—'}
+                  </Text>
+                  {!!gearByBeach[name] && (
+                    <View style={styles.gearRow}>
+                      <Text style={styles.gearLabel}>🏄 Gear </Text>
+                      <Text style={styles.gearName}>{gearByBeach[name]}</Text>
+                    </View>
+                  )}
                   <Text style={[styles.verdict, { color: v.color }]}>{v.label}</Text>
                 </>
               ) : (
@@ -580,6 +622,17 @@ const styles = StyleSheet.create({
   lastUpdatedText: { color: 'rgba(205,232,240,0.4)', fontSize: 11, textAlign: 'right', marginTop: -8, marginBottom: 8 },
   beachName: { color: colors.text, fontSize: 16, fontWeight: '700', marginBottom: 6 },
   line: { color: 'rgba(205,232,240,0.7)', fontSize: 13, marginBottom: 2 },
+  lineLabel: { color: 'rgba(205,232,240,0.45)' },
+  // Same treatment the 5-day cards use for their gear line: a tinted panel so
+  // the recommendation reads as an answer rather than another forecast row.
+  gearRow: {
+    flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap',
+    backgroundColor: 'rgba(26,138,181,0.12)', borderWidth: 1,
+    borderColor: 'rgba(26,138,181,0.25)', borderRadius: 8,
+    paddingHorizontal: 8, paddingVertical: 6, marginTop: 6,
+  },
+  gearLabel: { color: 'rgba(205,232,240,0.6)', fontSize: 12, fontWeight: '600' },
+  gearName: { color: colors.accent, fontSize: 13, fontWeight: '700' },
   verdict: { fontSize: 14, fontWeight: '700', marginTop: 6 },
   emptyText: { color: 'rgba(205,232,240,0.4)', fontSize: 13, textAlign: 'center', marginTop: 20 },
 
