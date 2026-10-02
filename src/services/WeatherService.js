@@ -2,6 +2,7 @@ import {
   BeachRepository, WeatherRepository, TideRepository, EquipmentRepository, CoachingService,
 } from '@commandersuite/core';
 import { WEATHER_WEBHOOK_URL } from '../config';
+import { formatGearCombo } from '../utils/gearFormat';
 
 const COMPASS = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
 
@@ -193,8 +194,11 @@ export const WeatherService = {
       return { mode: 'data', combos, text: null };
     }
 
+    // The fin is included here too: it is part of the combo the model is being
+    // asked to reason about, and leaving it out let the AI recommend around a
+    // component it had not been told about.
     const combosLine = combos.length
-      ? combos.map((c) => c.name || [c.board_name, c.sail_name].filter(Boolean).join(' / ')).join(', ')
+      ? combos.map((c) => formatGearCombo(c)).filter(Boolean).join(', ')
       : 'none in your quiver match these conditions';
 
     const question =

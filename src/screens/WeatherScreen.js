@@ -12,6 +12,7 @@ import SharedCard from '../components/SharedCard';
 import { ALL_BEACHES, seedBeaches } from '../utils/seedBeaches';
 import { WeatherService, fetchBeachWeather, isWeatherStale, conditionIndicator, degreesToCompass } from '../services/WeatherService';
 import { getTideForBeach, getTideSeriesForBeach, findTideExtremes } from '../utils/tideModel';
+import { formatGearCombo } from '../utils/gearFormat';
 import WindTideChart from '../components/WindTideChart';
 import ErrorBoundary from '../components/ErrorBoundary';
 import { colors } from '../theme';
@@ -74,16 +75,6 @@ async function fetchAndCacheWeather(beach) {
   const forecast = await fetchBeachWeather(beach);
   await WeatherRepository.cache(forecast);
   return forecast;
-}
-
-// One quiver combo as the rider sees it: "Fox 120L + Cosmic 7.5m". Boards are
-// sized in litres and sails in m², both stored as TEXT, so the size is only
-// appended when the equipment actually has one.
-function formatCombo(combo) {
-  if (!combo) return null;
-  const board = [combo.board_name, combo.board_size ? `${combo.board_size}L` : null].filter(Boolean).join(' ');
-  const sail  = [combo.sail_name,  combo.sail_size  ? `${combo.sail_size}m`  : null].filter(Boolean).join(' ');
-  return [board, sail].filter(Boolean).join(' + ') || combo.name || null;
 }
 
 // The tide row, e.g. "HW 18:00 1.93m · LW 11:13 -2.77m". Shows nothing at all
@@ -342,7 +333,7 @@ export default function WeatherScreen() {
         if (w?.best_wind_kn != null) {
           try {
             const combos = await EquipmentRepository.getMatchingGearCombos(w.best_wind_kn, w.wave_height_m, 1);
-            gear[name] = formatCombo(combos?.[0]);
+            gear[name] = formatGearCombo(combos?.[0]);
           } catch (err) {
             console.warn('[Weather] gear match failed for', name, err.message);
           }
@@ -418,13 +409,16 @@ export default function WeatherScreen() {
         <Text style={styles.emptyText}>No beaches selected yet — tap "Choose Beaches" to get started.</Text>
       ) : (
         selectedNames.map((name) => {
-          const beach = ALL_BEACHES.find((b) => b.name === name);
-          const f = forecasts[name];
+          // Prefer the database row (it carries id and every guide column);
+          // the seed entry is the fallback for a beach the DB does not have.
+          const cached = beachChecks.find((c) => c.beach.name === name);
+          const beach = cached?.beach || ALL_BEACHES.find((b) => b.name === name);
+          const f = forecasts[name] || cached?.weather || null;
           const v = verdict(f?.best_wind_kn ?? null);
           const tide = tideRow(tideByBeach[name]);
           return (
-            <SharedCard key={name}>
-              <Text style={styles.beachName}>{beach?.emoji} {name}</Text>
+            <SharedCard key={name} onPress={() => openBeachDetail({ beach, weather: f })}>
+              <Text style={styles.beachName}>{beach?.emoji} {name} <Text style={styles.cardHint}>›</Text></Text>
               {f ? (
                 <>
                   <Text style={styles.line}>
@@ -614,7 +608,12 @@ export default function WeatherScreen() {
                       {kitRecLoading
                         ? '…'
                         : kitRec?.combos?.length
-                        ? kitRec.combos.map((c) => c.name || [c.board_name, c.sail_name].filter(Boolean).join(' / ')).join(' + ')
+                        // Combo strings already use " + " between their own
+                        // parts, so several combos are separated with " · " to
+                        // keep the two levels distinguishable. The fin is
+                        // included — it was being dropped, so a combo with one
+                        // logged read as if it had none.
+                        ? kitRec.combos.map((c) => formatGearCombo(c)).filter(Boolean).join('  ·  ')
                         : 'No matching gear logged'}
                     </Text>
 
@@ -706,6 +705,8 @@ const styles = StyleSheet.create({
   refreshIcon: { fontSize: 20 },
   lastUpdatedText: { color: 'rgba(205,232,240,0.4)', fontSize: 11, textAlign: 'right', marginTop: -8, marginBottom: 8 },
   beachName: { color: colors.text, fontSize: 16, fontWeight: '700', marginBottom: 6 },
+  // Affordance for the card now being tappable.
+  cardHint: { color: 'rgba(205,232,240,0.35)', fontSize: 16, fontWeight: '400' },
   line: { color: 'rgba(205,232,240,0.7)', fontSize: 13, marginBottom: 2 },
   lineLabel: { color: 'rgba(205,232,240,0.45)' },
   tideDatum: { color: 'rgba(205,232,240,0.35)', fontSize: 11 },

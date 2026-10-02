@@ -1,7 +1,16 @@
 import React from 'react';
-import { View, StyleSheet } from 'react-native';
+import { View, TouchableOpacity, StyleSheet } from 'react-native';
 
-export default function SharedCard({ children, style }) {
+// Renders as a plain container by default. Given onPress it becomes a button —
+// used by the Weather screen's beach cards, which open that beach's detail.
+export default function SharedCard({ children, style, onPress }) {
+  if (onPress) {
+    return (
+      <TouchableOpacity activeOpacity={0.7} onPress={onPress} accessibilityRole="button" style={[styles.card, style]}>
+        {children}
+      </TouchableOpacity>
+    );
+  }
   return <View style={[styles.card, style]}>{children}</View>;
 }
 
