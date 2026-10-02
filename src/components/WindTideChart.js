@@ -119,15 +119,22 @@ export default function WindTideChart({
     const tidePath = smoothPath(tidePoints);
     const tideArea = tidePath && `${tidePath} L ${x(h1)} ${PAD.top + PLOT_H} L ${x(h0)} ${PAD.top + PLOT_H} Z`;
 
-    // Which hours qualify: windy enough AND with enough water. Withheld
-    // entirely unless the tide can honestly be compared with the limit.
-    const canJudge = minTideM != null && isChartDatum && windIdealMin != null && windIdealMax != null;
+    // The prime band needs both enough wind AND enough water, and is only drawn
+    // when both can be judged honestly. min_tide_m === 0 means this beach has no
+    // tidal restriction, so the band rests on the wind alone and no calibration
+    // is needed; a positive limit needs heights on the same datum as the limit.
+    const noTideLimit = minTideM === 0;
+    const tideLimitKnown = typeof minTideM === 'number' && minTideM > 0;
+    const canJudge = windIdealMin != null && windIdealMax != null &&
+      (noTideLimit || (tideLimitKnown && isChartDatum));
     const primeHours = [];
     if (canJudge) {
       for (const h of hours) {
         const i = hours.indexOf(h);
         const w = hourly[i]?.wind_kn;
-        const t = sampleAt(tideSeries, new Date(now.getFullYear(), now.getMonth(), now.getDate(), h));
+        const t = noTideLimit
+          ? 0
+          : sampleAt(tideSeries, new Date(now.getFullYear(), now.getMonth(), now.getDate(), h));
         if (w != null && t != null && w >= windIdealMin && w <= windIdealMax && t >= minTideM) {
           primeHours.push(h);
         }
@@ -156,6 +163,7 @@ export default function WindTideChart({
 
   const height = Math.round((width * VIEW_H) / VIEW_W);
   const { x, wy, ty, windMax, tideLo, tideHi, h0, h1, hours, nowHour, nowInRange } = model;
+  const tideLimitKnown = typeof minTideM === 'number' && minTideM > 0;
 
   const onTouch = (evt) => {
     const px = evt.nativeEvent.locationX;
@@ -301,7 +309,7 @@ export default function WindTideChart({
             </Text>
             <Text style={styles.readoutText}>
               🌊 {selTide != null ? `${selTide.toFixed(2)}m` : '—'}
-              {minTideM != null && isChartDatum && selTide != null
+              {tideLimitKnown && isChartDatum && selTide != null
                 ? (selTide >= minTideM ? ' · above launch limit' : ' · below launch limit')
                 : ''}
             </Text>
@@ -315,10 +323,12 @@ export default function WindTideChart({
         {model.canJudge && <Text style={styles.legendItemPrime}>▨ Prime window</Text>}
       </View>
 
-      {!isChartDatum && (
+      {/* Only worth nagging about the datum where a limit exists to compare
+          against — a beach with no tidal restriction needs no calibration. */}
+      {tideLimitKnown && !isChartDatum && (
         <Text style={styles.datumNote}>
           Tide heights are {tideDatumLabel || 'relative'}, not chart datum — import a tide set for this
-          station to compare them with the launch limit.
+          station to compare them with the {minTideM}m launch limit.
         </Text>
       )}
     </View>

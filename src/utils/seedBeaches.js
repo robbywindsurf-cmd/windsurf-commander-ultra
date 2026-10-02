@@ -45,6 +45,9 @@ export const ALL_BEACHES = [
     tidal_notes: 'Access to Burgh Island at low tide. Good at all tides for windsurfing.',
     hazards: 'Rocks around Burgh Island. Swimmers in summer.',
     notes: 'Open Atlantic swell exposure. Good wave sailing in SW winds.',
+    // "Good at all tides" (see tidal_notes) — no tidal restriction, so the
+    // chart's prime window rests on the wind alone and needs no calibration.
+    min_tide_m: 0,
   },
   {
     name: 'Daymer Bay', emoji: '⚠️', lat: 50.5462, lon: -4.8371, sort_order: 2,
@@ -57,6 +60,10 @@ export const ALL_BEACHES = [
     tidal_notes: 'Camel Estuary — best at mid tide. Very shallow at low tide.',
     hazards: 'Sandbanks, shallow water. Padstow harbour traffic.',
     notes: 'Sheltered estuary sailing. Good for beginners and light wind. Padstow across the water.',
+    // min_tide_m deliberately left unset: this is an estuary ("best at mid
+    // tide, very shallow at low tide"), so it does have a limit, but the value
+    // is not known yet. Unset withholds the prime window rather than treating
+    // the beach as unrestricted and recommending a low-tide launch.
   },
   {
     name: 'Marazion Beach', emoji: '🏰', lat: 50.1258, lon: -5.4756, sort_order: 3,
@@ -69,6 +76,8 @@ export const ALL_BEACHES = [
     tidal_notes: "Mount's Bay — good at all tides. More water at high tide near beach.",
     hazards: "Rocks near St Michael's Mount. Tourist boats in summer.",
     notes: "Mount's Bay. Views of St Michael's Mount. Offshore winds from N-NE give flat water. Can get choppy in S winds.",
+    // "good at all tides" — no tidal restriction.
+    min_tide_m: 0,
   },
   {
     name: 'Plymouth Sound', emoji: '⚓', lat: 50.3468, lon: -4.1447, sort_order: 4,
@@ -94,6 +103,8 @@ export const ALL_BEACHES = [
     tidal_notes: 'St Austell Bay. Good at all tides.',
     hazards: 'China clay port nearby. Industrial shipping.',
     notes: 'St Austell Bay venue. N-NE winds give offshore conditions.',
+    // "Good at all tides" — no tidal restriction.
+    min_tide_m: 0,
   },
   { name: 'Mothecombe', emoji: '🌿', lat: 50.3010, lon: -3.9575, sort_order: 6 },
   { name: 'Whitsands', emoji: '🪖', lat: 50.3376, lon: -4.2478, sort_order: 7 },
