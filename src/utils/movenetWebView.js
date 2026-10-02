@@ -526,6 +526,13 @@ export const MOVENET_HTML = `<!DOCTYPE html>
     function handleMessage(e) {
       try {
         var msg = JSON.parse(e.data);
+        if (msg.type === 'resetTracking') {
+          consecutiveMisses = 0;
+          resetStreak = 0;
+          riderSizeRef = null;
+          lastAcceptedCx = null;
+          lastAcceptedCy = null;
+        }
         if (msg.type === 'processFrame') {
           processFrame(
             msg.base64,

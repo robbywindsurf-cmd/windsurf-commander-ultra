@@ -10,7 +10,7 @@ import {
   UserStore, EquipmentRepository, WeatherRepository, canAccess,
 } from '@commandersuite/core';
 import { extractFrames } from './frameExtraction';
-import { runPoseDetectionOnFrame, getMoveNetDiag, resetMoveNetDiag } from './moveNet';
+import { runPoseDetectionOnFrame, getMoveNetDiag, resetMoveNetDiag, resetTracker } from './moveNet';
 import { analyseFrame } from './angleCalculations';
 import { videoUtcPlusSeconds } from './videoUtc';
 import { BiometricsUploadService } from '../services/BiometricsUploadService';
@@ -99,6 +99,10 @@ export async function analyseSessionVideo({
   let currentPhi = initialPhi;
 
   resetMoveNetDiag();
+  // The WebView outlives a single analysis, so its continuity gate would
+  // otherwise start this clip holding the last clip's reference rider size and
+  // reject every frame of it as the wrong subject.
+  resetTracker();
 
   for (let i = 0; i < frames.length; i++) {
     const frame = frames[i];

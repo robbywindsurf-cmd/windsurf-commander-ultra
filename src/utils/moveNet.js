@@ -23,6 +23,9 @@ const diag = {
   framesReplied: 0,
   framesTimedOut: 0,
   nullKeypoints: 0,
+  // Subset of nullKeypoints the continuity gate suppressed: it found a pose but
+  // judged it a different subject. Distinct from the detector finding nothing.
+  gateRejected: 0,
   frameErrors: 0,
 };
 
@@ -41,6 +44,7 @@ export function resetMoveNetDiag() {
   diag.framesReplied = 0;
   diag.framesTimedOut = 0;
   diag.nullKeypoints = 0;
+  diag.gateRejected = 0;
   diag.frameErrors = 0;
 }
 
@@ -66,7 +70,21 @@ export function handleWebViewMessage(event) {
 
     if (msg.type === 'result') {
       diag.framesReplied++;
-      if (!msg.keypoints) diag.nullKeypoints++;
+      // A frame can come back without keypoints either because the detector
+      // found no pose in it, or because the continuity gate rejected the pose it
+      // did find as a different subject. Those say opposite things about whether
+      // the gate is working, and reporting them as one number left a run of 100
+      // rejections indistinguishable from a run of 100 empty frames — which is
+      // exactly the ambiguity behind the unexplained GS010112 20/100 against
+      // GS010113's 99/100. nullKeypoints stays the total; gateRejected is the
+      // part of it the gate suppressed.
+      const gateAction = (msg.trackingAction === 'reset' ||
+        (typeof msg.trackingAction === 'string' && msg.trackingAction.indexOf('rejected') === 0))
+        ? msg.trackingAction : null;
+      if (!msg.keypoints) {
+        diag.nullKeypoints++;
+        if (gateAction) diag.gateRejected++;
+      }
       const pending = pendingFrames[msg.frameId];
       if (pending) {
         pending.resolve({
@@ -74,6 +92,7 @@ export function handleWebViewMessage(event) {
           annotatedFrame: msg.annotatedFrame || null,
           nextTheta:      msg.nextTheta      ?? null,
           nextPhi:        msg.nextPhi        ?? null,
+          trackingAction: msg.trackingAction ?? null,
         });
         delete pendingFrames[msg.frameId];
       }
@@ -179,4 +198,21 @@ export function disposeDetector() {
   webviewRef = null;
   pendingFrames = {};
   mountedAt = null;
+}
+
+// Clears the continuity gate's memory inside the WebView. The gate keeps a
+// reference rider size and a last-good position for the whole life of the
+// WebView, and the WebView is mounted once and reused across analyses — the
+// trace shows a single "detector ready" line serving several runs. Without this,
+// each analysis inherits the previous clip's reference size, so a clip whose
+// rider sits at a different apparent distance is rejected wholesale. That is a
+// plausible cause of a 0/100 run that reports no reason at all.
+//
+// Safe to call before the WebView is up: a fresh WebView has fresh state anyway.
+export function resetTracker() {
+  try {
+    webviewRef?.current?.postMessage(JSON.stringify({ type: 'resetTracking' }));
+  } catch (err) {
+    console.warn('[MoveNet] resetTracker failed:', err.message);
+  }
 }
