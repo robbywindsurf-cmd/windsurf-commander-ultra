@@ -11,6 +11,28 @@ import SharedCard from '../components/SharedCard';
 import { ALL_BEACHES, seedBeaches } from '../utils/seedBeaches';
 import { WeatherService, fetchBeachWeather, isWeatherStale, conditionIndicator, degreesToCompass } from '../services/WeatherService';
 import { colors } from '../theme';
+import Markdown from 'react-native-markdown-display';
+
+// Matches the production app's briefing styling so the cloud briefing reads the
+// same in both. Tables need an explicit border: react-native-markdown-display
+// renders them unstyled otherwise, which is most of this briefing's content.
+const markdownStyles = {
+  body: { color: '#ffffff', fontSize: 14, lineHeight: 22, backgroundColor: 'transparent' },
+  heading1: { color: colors.accent, fontSize: 18, fontWeight: '700', marginBottom: 8 },
+  heading2: { color: '#cde8f0', fontSize: 16, fontWeight: '600', marginBottom: 6 },
+  heading3: { color: '#cde8f0', fontSize: 14, fontWeight: '600', marginBottom: 4 },
+  strong: { color: colors.accent, fontWeight: '700' },
+  bullet_list: { marginBottom: 8 },
+  list_item: { color: '#ffffff', marginBottom: 4 },
+  hr: { backgroundColor: 'rgba(26,138,181,0.3)', marginVertical: 8 },
+  code_block: { backgroundColor: 'transparent' },
+  fence: { backgroundColor: 'transparent' },
+  table: { borderWidth: 1, borderColor: 'rgba(26,138,181,0.35)', borderRadius: 4 },
+  thead: { backgroundColor: 'rgba(26,138,181,0.15)' },
+  th: { padding: 6, color: '#cde8f0', fontWeight: '700' },
+  td: { padding: 6, color: '#ffffff' },
+  tr: { borderBottomWidth: 1, borderColor: 'rgba(26,138,181,0.2)' },
+};
 
 const MAX_BEACHES = 5;
 const SELECTION_KEY = 'ws_selected_beach_names';
@@ -202,13 +224,13 @@ export default function WeatherScreen() {
     setBriefingText('');
     try {
       const favouriteCheck = beachChecks.find((c) => c.beach.id === favouriteBeach?.id);
-      const text = await WeatherService.getBriefing({
+      const result = await WeatherService.getBriefing({
         beach: favouriteBeach,
         weather: favouriteCheck?.weather ?? null,
         tideState: tideStateNow,
         tier,
       });
-      setBriefingText(text || "Upgrade to Premium to unlock AI briefings.");
+      setBriefingText(result?.text || "Upgrade to Premium to unlock AI briefings.");
     } catch (err) {
       setBriefingText('⚠️ ' + (err.message || 'Could not generate briefing.'));
     } finally {
@@ -534,7 +556,12 @@ export default function WeatherScreen() {
             {briefingLoading ? (
               <ActivityIndicator color={colors.accent} style={{ marginVertical: 20 }} />
             ) : (
-              <Text style={styles.line}>{briefingText}</Text>
+              // The cloud briefing arrives as markdown, with a conditions table
+              // — rendered rather than dumped as raw pipes and hashes. Scrollable
+              // because it is long (a row per beach).
+              <ScrollView style={styles.briefingScroll} contentContainerStyle={styles.briefingScrollContent}>
+                <Markdown style={markdownStyles}>{briefingText}</Markdown>
+              </ScrollView>
             )}
             <TouchableOpacity activeOpacity={0.7} style={styles.modalCloseBtn} onPress={() => setBriefingVisible(false)}>
               <Text style={styles.modalCloseBtnText}>Close</Text>
@@ -660,4 +687,8 @@ const styles = StyleSheet.create({
   },
   modalCloseBtn: { alignItems: 'center', paddingVertical: 14, marginTop: 14 },
   modalCloseBtnText: { color: 'rgba(205,232,240,0.5)', fontSize: 14, fontWeight: '600' },
+  // flexShrink lets the sheet's 80% maxHeight bound the scroll area rather than
+  // the content pushing the Close button off the screen.
+  briefingScroll: { flexShrink: 1 },
+  briefingScrollContent: { paddingBottom: 4 },
 });

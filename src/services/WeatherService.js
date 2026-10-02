@@ -1,8 +1,45 @@
 import {
   BeachRepository, WeatherRepository, TideRepository, EquipmentRepository, CoachingService,
 } from '@commandersuite/core';
+import { WEATHER_WEBHOOK_URL } from '../config';
 
 const COMPASS = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
+
+// The briefing workflow runs a full AI pass over every beach, so it is slow by
+// nature; this is a ceiling, not an expectation.
+const BRIEFING_TIMEOUT_MS = 60000;
+
+// The workflow returns the briefing as markdown text. It is read as text rather
+// than JSON because that is what the production app does and what the Respond
+// node emits. An n8n workflow that is changed to respond with JSON would return
+// the serialised object here, so a JSON body is unwrapped to its text field
+// when one is present, rather than rendered as raw braces on screen.
+async function fetchRemoteBriefing() {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), BRIEFING_TIMEOUT_MS);
+  try {
+    const res = await fetch(WEATHER_WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chatInput: 'Should I windsurf today? Give me a full briefing.' }),
+      signal: controller.signal,
+    });
+    if (!res.ok) throw new Error(`briefing webhook returned ${res.status}`);
+
+    const raw = (await res.text()) || '';
+    let text = raw.trim();
+    if (text.startsWith('{') || text.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(text);
+        const candidate = Array.isArray(parsed) ? parsed[0] : parsed;
+        text = (candidate?.text ?? candidate?.output ?? candidate?.message ?? '').toString().trim();
+      } catch { /* not JSON after all — keep the raw body */ }
+    }
+    return text || null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 export function degreesToCompass(deg) {
   if (deg == null) return null;
@@ -171,18 +208,31 @@ export const WeatherService = {
     return { mode: 'ai', combos, text };
   },
 
-  // Local-AI morning briefing for one beach, grounded in that beach's own
-  // cached weather (not whichever beach happens to have the highest wind
-  // today, which is buildSystemPrompt's own default).
+  // Today's full briefing. Prefers the Cloud/Oracle workflow, which is what
+  // produces the cross-beach briefing with a conditions table and gear
+  // recommendations — the on-device 3B model cannot, since it has no data for
+  // the other 15 beaches. Falls back to the local model when the webhook is
+  // unreachable or slow, so the sheet still answers offline.
+  //
+  // The timeout matters for the fallback to be reachable at all: without one a
+  // stalled webhook leaves the request open indefinitely and the local path
+  // never runs.
   async getBriefing({ beach, weather, tideState, tier }) {
     if (tier === 'free') return null;
+
+    const remote = await fetchRemoteBriefing().catch((err) => {
+      console.warn('[WeatherService] briefing webhook failed, using local model:', err.message);
+      return null;
+    });
+    if (remote) return { text: remote, source: 'cloud' };
 
     const question =
       `Give me a short morning briefing for ${beach?.name ?? 'my beach'} today. ` +
       `Include a kit recommendation from my quiver and a clear Go / Maybe / Stay home verdict.` +
       (tideState ? ` Tide right now: ${tideState.description}.` : '');
 
-    return CoachingService.answerQuestion(question, { weather: weather || null }, tier);
+    const text = await CoachingService.answerQuestion(question, { weather: weather || null }, tier);
+    return text ? { text, source: 'local' } : null;
   },
 
   // 5-day forecast for one beach from Open-Meteo (free, no key) + its
