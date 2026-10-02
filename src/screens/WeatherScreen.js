@@ -10,6 +10,7 @@ import Header from '../components/Header';
 import SharedCard from '../components/SharedCard';
 import { ALL_BEACHES, seedBeaches } from '../utils/seedBeaches';
 import { WeatherService, fetchBeachWeather, isWeatherStale, conditionIndicator, degreesToCompass } from '../services/WeatherService';
+import { getTideForBeach } from '../utils/tideModel';
 import { colors } from '../theme';
 import Markdown from 'react-native-markdown-display';
 
@@ -82,6 +83,20 @@ function formatCombo(combo) {
   return [board, sail].filter(Boolean).join(' + ') || combo.name || null;
 }
 
+// The tide row, e.g. "HW 18:00 1.93m · LW 11:13 -2.77m". Shows nothing at all
+// when the model has no coverage for that beach, rather than an empty label.
+// The datum is named in the row because these heights are relative to mean sea
+// level and are NOT comparable with an imported Admiralty/Chart Datum figure —
+// presenting them without saying so would invite exactly that comparison.
+function tideRow(tide) {
+  if (!tide?.high && !tide?.low) return null;
+  const at = (t) => t.toTimeString().slice(0, 5);
+  const parts = [];
+  if (tide.high) parts.push(`HW ${at(tide.high.time)} ${tide.high.height.toFixed(2)}m`);
+  if (tide.low)  parts.push(`LW ${at(tide.low.time)} ${tide.low.height.toFixed(2)}m`);
+  return { text: parts.join(' · '), datum: tide.datum };
+}
+
 function parseHourlyForecast(weather) {
   if (!weather?.forecast_json) return [];
   try {
@@ -99,6 +114,7 @@ export default function WeatherScreen() {
   const [selectedNames, setSelectedNames] = useState([]);
   const [forecasts, setForecasts] = useState({});
   const [gearByBeach, setGearByBeach] = useState({}); // beach name -> formatted combo, or null
+  const [tideByBeach, setTideByBeach] = useState({}); // beach name -> { high, low, datum }
   const [loading, setLoading] = useState(false);
   const [pickerVisible, setPickerVisible] = useState(false);
   const [pendingSelection, setPendingSelection] = useState([]);
@@ -287,18 +303,28 @@ export default function WeatherScreen() {
       // and stays correct if the quiver changes without a weather refresh.
       // Only asked for once a wind figure exists: the matcher's wind bounds
       // reject a null, which would otherwise silently return no combos.
+      // Tide comes from the Open-Meteo model per beach (see tideModel.js) —
+      // there is no per-beach tide workflow on the server and the imported
+      // Admiralty file only covers the dates it was imported for.
       const gear = {};
+      const tide = {};
       await Promise.all(Object.entries(results).map(async ([name, w]) => {
-        if (w?.best_wind_kn == null) { gear[name] = null; return; }
-        try {
-          const combos = await EquipmentRepository.getMatchingGearCombos(w.best_wind_kn, w.wave_height_m, 1);
-          gear[name] = formatCombo(combos?.[0]);
-        } catch (err) {
-          console.warn('[Weather] gear match failed for', name, err.message);
-          gear[name] = null;
+        const beach = ALL_BEACHES.find((b) => b.name === name);
+
+        gear[name] = null;
+        if (w?.best_wind_kn != null) {
+          try {
+            const combos = await EquipmentRepository.getMatchingGearCombos(w.best_wind_kn, w.wave_height_m, 1);
+            gear[name] = formatCombo(combos?.[0]);
+          } catch (err) {
+            console.warn('[Weather] gear match failed for', name, err.message);
+          }
         }
+
+        tide[name] = beach ? await getTideForBeach(beach) : null;
       }));
       setGearByBeach(gear);
+      setTideByBeach(tide);
     } finally {
       setLoading(false);
     }
@@ -368,6 +394,7 @@ export default function WeatherScreen() {
           const beach = ALL_BEACHES.find((b) => b.name === name);
           const f = forecasts[name];
           const v = verdict(f?.best_wind_kn ?? null);
+          const tide = tideRow(tideByBeach[name]);
           return (
             <SharedCard key={name}>
               <Text style={styles.beachName}>{beach?.emoji} {name}</Text>
@@ -388,6 +415,13 @@ export default function WeatherScreen() {
                     <Text style={styles.lineLabel}>Temp: </Text>
                     {f.temperature_c != null ? `${f.temperature_c}°C` : '—'}
                   </Text>
+                  {!!tide && (
+                    <Text style={styles.line}>
+                      <Text style={styles.lineLabel}>Tide: </Text>
+                      {tide.text}
+                      <Text style={styles.tideDatum}> ({tide.datum})</Text>
+                    </Text>
+                  )}
                   {!!gearByBeach[name] && (
                     <View style={styles.gearRow}>
                       <Text style={styles.gearLabel}>🏄 Gear </Text>
@@ -623,6 +657,7 @@ const styles = StyleSheet.create({
   beachName: { color: colors.text, fontSize: 16, fontWeight: '700', marginBottom: 6 },
   line: { color: 'rgba(205,232,240,0.7)', fontSize: 13, marginBottom: 2 },
   lineLabel: { color: 'rgba(205,232,240,0.45)' },
+  tideDatum: { color: 'rgba(205,232,240,0.35)', fontSize: 11 },
   // Same treatment the 5-day cards use for their gear line: a tinted panel so
   // the recommendation reads as an answer rather than another forecast row.
   gearRow: {
