@@ -331,6 +331,19 @@ export default function ClipSelectorScreen({ route, navigation }) {
     return { clipText, gpsText, warning };
   }, [videoStartUtc, startMs, gpsCoverage]);
 
+  // Rendered under the video in both modes. This block used to be a direct child
+  // of the row container, which put it *beside* the video — between the video and
+  // the side panel — taking up as much as a third of the screen in landscape.
+  const sessionCheckBlock = sessionCheck ? (
+    <View style={styles.sessionCheck}>
+      <Text style={styles.sessionCheckLine}>{sessionCheck.clipText}</Text>
+      <Text style={styles.sessionCheckLine}>{sessionCheck.gpsText}</Text>
+      {!!sessionCheck.warning && (
+        <Text style={styles.sessionCheckWarning}>⚠️ {sessionCheck.warning}</Text>
+      )}
+    </View>
+  ) : null;
+
   return (
     <View style={styles.container}>
 
@@ -348,6 +361,8 @@ export default function ClipSelectorScreen({ route, navigation }) {
                 <Text style={{ color: TEXT }}>No frame</Text>
               </View>
             )}
+
+            {sessionCheckBlock}
 
             <View
               style={[
@@ -506,62 +521,56 @@ export default function ClipSelectorScreen({ route, navigation }) {
           </View>
         </View>
       ) : (
-        <TouchableWithoutFeedback onPress={onVideoTap}>
-          <View
-            style={styles.videoArea}
-            onLayout={e => setVideoLayout({
-              width:  e.nativeEvent.layout.width,
-              height: e.nativeEvent.layout.height,
-            })}
-          >
-            {analysing && currentFrame ? (
-              <Image
-                source={{ uri: 'data:image/jpeg;base64,' + currentFrame }}
-                style={styles.video}
-                resizeMode="contain"
-              />
-            ) : (
-              <VideoView
-                player={player}
-                style={styles.video}
-                contentFit="contain"
-                nativeControls={false}
-              />
-            )}
+        <View style={styles.videoColumn}>
+          <TouchableWithoutFeedback onPress={onVideoTap}>
+            <View
+              style={styles.videoArea}
+              onLayout={e => setVideoLayout({
+                width:  e.nativeEvent.layout.width,
+                height: e.nativeEvent.layout.height,
+              })}
+            >
+              {analysing && currentFrame ? (
+                <Image
+                  source={{ uri: 'data:image/jpeg;base64,' + currentFrame }}
+                  style={styles.video}
+                  resizeMode="contain"
+                />
+              ) : (
+                <VideoView
+                  player={player}
+                  style={styles.video}
+                  contentFit="contain"
+                  nativeControls={false}
+                />
+              )}
 
-            {analysing && !currentFrame && (
-              <View pointerEvents="none" style={styles.statusOverlay}>
-                <Text style={styles.statusText}>{analysisStatus || 'Starting…'}</Text>
-              </View>
-            )}
+              {analysing && !currentFrame && (
+                <View pointerEvents="none" style={styles.statusOverlay}>
+                  <Text style={styles.statusText}>{analysisStatus || 'Starting…'}</Text>
+                </View>
+              )}
 
-            {riderTapPos && !analysing && (
-              <View
-                pointerEvents="none"
-                style={[styles.crosshair, { left: riderTapPos.x - 20, top: riderTapPos.y - 20 }]}
-              >
-                <View style={styles.crosshairH} />
-                <View style={styles.crosshairV} />
-                <View style={styles.crosshairCircle} />
-              </View>
-            )}
+              {riderTapPos && !analysing && (
+                <View
+                  pointerEvents="none"
+                  style={[styles.crosshair, { left: riderTapPos.x - 20, top: riderTapPos.y - 20 }]}
+                >
+                  <View style={styles.crosshairH} />
+                  <View style={styles.crosshairV} />
+                  <View style={styles.crosshairCircle} />
+                </View>
+              )}
 
-            {mode === 'locateRider' && (
-              <View pointerEvents="none" style={styles.locateOverlay}>
-                <Text style={styles.locateText}>👆 Tap on yourself in the video</Text>
-              </View>
-            )}
-          </View>
-        </TouchableWithoutFeedback>
-      )}
+              {mode === 'locateRider' && (
+                <View pointerEvents="none" style={styles.locateOverlay}>
+                  <Text style={styles.locateText}>👆 Tap on yourself in the video</Text>
+                </View>
+              )}
+            </View>
+          </TouchableWithoutFeedback>
 
-      {!!sessionCheck && (
-        <View style={styles.sessionCheck}>
-          <Text style={styles.sessionCheckLine}>{sessionCheck.clipText}</Text>
-          <Text style={styles.sessionCheckLine}>{sessionCheck.gpsText}</Text>
-          {!!sessionCheck.warning && (
-            <Text style={styles.sessionCheckWarning}>⚠️ {sessionCheck.warning}</Text>
-          )}
+          {sessionCheckBlock}
         </View>
       )}
 
@@ -824,8 +833,11 @@ const styles = StyleSheet.create({
   cancelBtnText: { color: DANGER, fontSize: 13, fontWeight: '700' },
 
   hintText:  { color: 'rgba(205,232,240,0.4)', fontSize: 10, marginTop: 8, textAlign: 'center' },
-  sessionCheck:        { marginTop: 8, alignSelf: 'center', alignItems: 'center', paddingHorizontal: 8 },
-  sessionCheckLine:    { color: 'rgba(205,232,240,0.65)', fontSize: 11, textAlign: 'center' },
-  sessionCheckWarning: { color: DANGER, fontSize: 11, marginTop: 4, textAlign: 'center', maxWidth: 460 },
+  videoColumn: { flex: 1, backgroundColor: '#000' },
+  // Sits under the video now, so keep it shallow: in landscape every row of text
+  // here is video that is no longer visible.
+  sessionCheck:        { paddingHorizontal: 8, paddingVertical: 3, alignItems: 'center' },
+  sessionCheckLine:    { color: 'rgba(205,232,240,0.6)', fontSize: 10, textAlign: 'center' },
+  sessionCheckWarning: { color: DANGER, fontSize: 10, marginTop: 2, textAlign: 'center', maxWidth: 520 },
   errorText: { color: DANGER, fontSize: 11, marginTop: 6 },
 });
