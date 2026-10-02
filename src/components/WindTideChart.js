@@ -236,7 +236,7 @@ export default function WindTideChart({
           ))}
 
           {/* Tide behind, then wind in front — the mock's layer order. */}
-          {!!tideArea && <Path d={tideArea} fill="url(#tg)" />}
+          {!!model.tideArea && <Path d={model.tideArea} fill="url(#tg)" />}
           {!!model.tidePath && <Path d={model.tidePath} fill="none" stroke={TIDE_COLOUR} strokeWidth="2" />}
 
           {extremes.map((e, i) => {

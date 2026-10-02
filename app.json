@@ -13,7 +13,7 @@
       "usesAppleSignIn": true,
       "bundleIdentifier": "com.commandersuite.windsurf",
       "appleTeamId": "4JG2728CZU",
-      "buildNumber": "20",
+      "buildNumber": "21",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
         "UIApplicationSceneManifest": {
