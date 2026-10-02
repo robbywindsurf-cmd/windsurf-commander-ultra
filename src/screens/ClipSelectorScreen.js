@@ -412,8 +412,8 @@ export default function ClipSelectorScreen({ route, navigation }) {
           </View>
 
           {annotatedFrames.length > 0 && (
-            // Always mounted at the same fixed width regardless of whether
-            // this specific frame has pose data — the panel previously
+            // Kept mounted at a constant size for every frame regardless of
+            // whether this specific frame has pose data — the panel previously
             // vanished entirely on frames with no detected pose (hasPose
             // false), which let the video column beside it expand to fill
             // the freed width, visibly resizing the video between frames.
@@ -710,7 +710,9 @@ const styles = StyleSheet.create({
   // top of the video, which on a landscape screen left only thin slivers
   // of the actual frame visible above and below the overlay.
   reviewArea: { flex: 1, flexDirection: 'row', backgroundColor: '#000' },
-  reviewVideoColumn: { flex: 1 },
+  // Two-thirds video to one-third stats. Set as a ratio rather than a fixed
+  // width for the panel so it holds on any screen size.
+  reviewVideoColumn: { flex: 2 },
 
   summaryArea: { flex: 1, backgroundColor: DEEP, padding: 24, justifyContent: 'center' },
   summaryTitle: { color: TEXT, fontSize: 20, fontWeight: '700', textAlign: 'center', marginBottom: 16 },
@@ -727,7 +729,7 @@ const styles = StyleSheet.create({
   upgradeBannerBtn: { backgroundColor: ACCENT, paddingVertical: 8, paddingHorizontal: 20, borderRadius: 8 },
   upgradeBannerBtnText: { color: '#fff', fontWeight: '700', fontSize: 13 },
   analysisSidePanel: {
-    width: 260, backgroundColor: 'rgba(6,31,46,0.5)',
+    flex: 1, minWidth: 240, backgroundColor: 'rgba(6,31,46,0.5)',
     borderLeftWidth: 1, borderLeftColor: 'rgba(255,255,255,0.08)',
   },
   analysisRowContent: { padding: 8, gap: 8 },
