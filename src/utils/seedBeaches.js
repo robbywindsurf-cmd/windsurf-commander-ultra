@@ -27,6 +27,12 @@ export const ALL_BEACHES = [
     tidal_notes: 'Best at mid-high tide. Low tide exposes mud flats. Tidal range ~4m — check before launch.',
     hazards: 'Shipping channel — stay clear of ferries and naval vessels. Mud at low tide.',
     notes: 'Flat water speed sailing venue. Sheltered estuary. Good for freeride and speed. WNW winds can be gusty off the hills.',
+    // Chart Datum, calibrated against the imported admiralty_0014 predictions
+    // (see tideModel.calibrateBeachDatum). Below this the mud flats start to
+    // show, so the wind & tide chart withholds its "prime window" rather than
+    // recommending a launch the tide does not allow.
+    min_tide_m: 2.0,
+    tide_station_id: 'admiralty_0014',
   },
   {
     name: 'Bigbury on Sea', emoji: '🌊', lat: 50.2822, lon: -3.8905, sort_order: 1,

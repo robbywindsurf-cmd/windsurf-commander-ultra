@@ -1,6 +1,7 @@
 import React, { useCallback, useState } from 'react';
 import {
   ScrollView, Text, View, StyleSheet, TouchableOpacity, ActivityIndicator, Modal, FlatList,
+  useWindowDimensions,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -10,7 +11,8 @@ import Header from '../components/Header';
 import SharedCard from '../components/SharedCard';
 import { ALL_BEACHES, seedBeaches } from '../utils/seedBeaches';
 import { WeatherService, fetchBeachWeather, isWeatherStale, conditionIndicator, degreesToCompass } from '../services/WeatherService';
-import { getTideForBeach } from '../utils/tideModel';
+import { getTideForBeach, getTideSeriesForBeach, findTideExtremes } from '../utils/tideModel';
+import WindTideChart from '../components/WindTideChart';
 import { colors } from '../theme';
 import Markdown from 'react-native-markdown-display';
 
@@ -111,10 +113,15 @@ function parseHourlyForecast(weather) {
 
 export default function WeatherScreen() {
   const insets = useSafeAreaInsets();
+  const { width: screenWidth } = useWindowDimensions();
   const [selectedNames, setSelectedNames] = useState([]);
   const [forecasts, setForecasts] = useState({});
   const [gearByBeach, setGearByBeach] = useState({}); // beach name -> formatted combo, or null
   const [tideByBeach, setTideByBeach] = useState({}); // beach name -> { high, low, datum }
+  // The detail sheet's own tide series for the wind & tide chart: hourly
+  // heights plus today's turns. Loaded when the sheet opens rather than with
+  // the cards, because it is only needed one beach at a time.
+  const [detailTide, setDetailTide] = useState(null); // { series, extremes, isChartDatum, datum } | null
   const [loading, setLoading] = useState(false);
   const [pickerVisible, setPickerVisible] = useState(false);
   const [pendingSelection, setPendingSelection] = useState([]);
@@ -211,6 +218,25 @@ export default function WeatherScreen() {
     setSelectedCheck(check);
     setKitRec(null);
     setKitRecLoading(true);
+    setDetailTide(null);
+
+    // Fire the chart's tide load alongside the kit recommendation rather than
+    // after it — two independent reads, and the model call can take a second.
+    getTideSeriesForBeach(check.beach)
+      .then(({ series, isChartDatum }) => {
+        const today = new Date();
+        const extremes = findTideExtremes(series, null).filter((e) =>
+          e.time.getDate() === today.getDate() &&
+          e.time.getMonth() === today.getMonth() &&
+          e.time.getFullYear() === today.getFullYear()
+        );
+        setDetailTide({ series, extremes, isChartDatum });
+      })
+      .catch((err) => {
+        console.warn('[Weather] detail tide load failed:', err.message);
+        setDetailTide({ series: [], extremes: [], isChartDatum: false });
+      });
+
     try {
       const rec = await WeatherService.getKitRecommendation({
         beach: check.beach, weather: check.weather, tideState: tideStateNow, tier,
@@ -589,6 +615,26 @@ export default function WeatherScreen() {
                         : 'No matching gear logged'}
                     </Text>
 
+                    <Text style={styles.detailSectionLabel}>Wind &amp; Tide:</Text>
+                    {detailTide ? (
+                      <WindTideChart
+                        hourly={parseHourlyForecast(selectedCheck.weather)}
+                        tideSeries={detailTide.series}
+                        extremes={detailTide.extremes}
+                        windIdealMin={selectedCheck.beach.ideal_wind_kn_min}
+                        windIdealMax={selectedCheck.beach.ideal_wind_kn_max}
+                        minTideM={selectedCheck.beach.min_tide_m}
+                        isChartDatum={detailTide.isChartDatum}
+                        tideDatumLabel={tideByBeach[selectedCheck.beach.name]?.datum}
+                        width={Math.max(260, Math.min(screenWidth - 72, 420))}
+                      />
+                    ) : (
+                      <ActivityIndicator color={colors.accent} style={{ marginVertical: 16 }} />
+                    )}
+
+                    {/* The 16-row list is kept below the chart: the chart answers
+                        "when", the list still gives exact per-hour numbers for
+                        anyone who wants to read them off. */}
                     <Text style={styles.detailSectionLabel}>Hourly forecast:</Text>
                     <View style={styles.hourlyBox}>
                       {parseHourlyForecast(selectedCheck.weather).length ? (
